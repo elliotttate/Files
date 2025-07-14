@@ -368,7 +368,8 @@ namespace Files.App.Views.Shells
 
 		protected async void ShellPage_TextChanged(ISearchBoxViewModel sender, SearchBoxTextChangedEventArgs e)
 		{
-			if (e.Reason != SearchBoxTextChangeReason.UserInput)
+			// In filter mode, we need to handle both user input and programmatic changes (like escape key)
+			if (e.Reason != SearchBoxTextChangeReason.UserInput && !sender.IsFilterMode)
 				return;
 
 			if (sender.IsFilterMode)
@@ -406,7 +407,7 @@ namespace Files.App.Views.Shells
 
 		protected async void ShellPage_SearchEscaped(object sender, ISearchBoxViewModel e)
 		{
-			if (e.IsFilterMode && !string.IsNullOrEmpty(e.Query))
+			if (e.IsFilterMode)
 			{
 				// Clear filter text when escape is pressed in filter mode, but keep filter mode active
 				e.Query = string.Empty;
