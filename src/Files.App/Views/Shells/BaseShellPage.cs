@@ -190,6 +190,7 @@ namespace Files.App.Views.Shells
 			ToolbarViewModel.PathBoxQuerySubmitted += NavigationToolbar_QuerySubmitted;
 			ToolbarViewModel.SearchBox.TextChanged += ShellPage_TextChanged;
 			ToolbarViewModel.SearchBox.QuerySubmitted += ShellPage_QuerySubmitted;
+			ToolbarViewModel.SearchBox.Escaped += ShellPage_SearchEscaped;
 
 			InstanceViewModel.FolderSettings.SortDirectionPreferenceUpdated += AppSettings_SortDirectionPreferenceUpdated;
 			InstanceViewModel.FolderSettings.SortOptionPreferenceUpdated += AppSettings_SortOptionPreferenceUpdated;
@@ -350,7 +351,19 @@ namespace Files.App.Views.Shells
 			if (e.ChosenSuggestion is SuggestionModel item && !string.IsNullOrWhiteSpace(item.ItemPath))
 				await NavigationHelpers.OpenPath(item.ItemPath, this);
 			else if (e.ChosenSuggestion is null && !string.IsNullOrWhiteSpace(sender.Query))
-				SubmitSearch(sender.Query);
+			{
+				if (sender.IsFilterMode)
+				{
+					// In filter mode, just apply the filter without navigating to search results
+					ShellViewModel.FilesAndFoldersFilter = sender.Query;
+					await ShellViewModel.ApplyFilesAndFoldersChangesAsync();
+				}
+				else
+				{
+					// In search mode, navigate to search results page
+					SubmitSearch(sender.Query);
+				}
+			}
 		}
 
 		protected async void ShellPage_TextChanged(ISearchBoxViewModel sender, SearchBoxTextChangedEventArgs e)
@@ -358,23 +371,47 @@ namespace Files.App.Views.Shells
 			if (e.Reason != SearchBoxTextChangeReason.UserInput)
 				return;
 
-			ShellViewModel.FilesAndFoldersFilter = sender.Query;
-			await ShellViewModel.ApplyFilesAndFoldersChangesAsync();
-
-			if (!string.IsNullOrWhiteSpace(sender.Query))
+			if (sender.IsFilterMode)
 			{
-				var search = new FolderSearch
-				{
-					Query = sender.Query,
-					Folder = ShellViewModel.WorkingDirectory,
-					MaxItemCount = 10,
-				};
-
-				sender.SetSuggestions((await search.SearchAsync()).Select(suggestion => new SuggestionModel(suggestion)));
+				// In filter mode, apply the filter to current directory
+				ShellViewModel.FilesAndFoldersFilter = sender.Query;
+				await ShellViewModel.ApplyFilesAndFoldersChangesAsync();
+				
+				// Clear suggestions in filter mode
+				sender.ClearSuggestions();
 			}
 			else
 			{
-				sender.AddRecentQueries();
+				// In search mode, clear the filter and show search suggestions
+				ShellViewModel.FilesAndFoldersFilter = string.Empty;
+				await ShellViewModel.ApplyFilesAndFoldersChangesAsync();
+
+				if (!string.IsNullOrWhiteSpace(sender.Query))
+				{
+					var search = new FolderSearch
+					{
+						Query = sender.Query,
+						Folder = ShellViewModel.WorkingDirectory,
+						MaxItemCount = 10,
+					};
+
+					sender.SetSuggestions((await search.SearchAsync()).Select(suggestion => new SuggestionModel(suggestion)));
+				}
+				else
+				{
+					sender.AddRecentQueries();
+				}
+			}
+		}
+
+		protected async void ShellPage_SearchEscaped(object sender, ISearchBoxViewModel e)
+		{
+			if (e.IsFilterMode && !string.IsNullOrEmpty(e.Query))
+			{
+				// Clear filter text when escape is pressed in filter mode, but keep filter mode active
+				e.Query = string.Empty;
+				ShellViewModel.FilesAndFoldersFilter = string.Empty;
+				await ShellViewModel.ApplyFilesAndFoldersChangesAsync();
 			}
 		}
 
@@ -841,6 +878,8 @@ namespace Files.App.Views.Shells
 			ToolbarViewModel.ItemDraggedOverPathItem -= ShellPage_NavigationRequested;
 			ToolbarViewModel.PathBoxQuerySubmitted -= NavigationToolbar_QuerySubmitted;
 			ToolbarViewModel.SearchBox.TextChanged -= ShellPage_TextChanged;
+			ToolbarViewModel.SearchBox.QuerySubmitted -= ShellPage_QuerySubmitted;
+			ToolbarViewModel.SearchBox.Escaped -= ShellPage_SearchEscaped;
 
 			InstanceViewModel.FolderSettings.LayoutPreferencesUpdateRequired -= FolderSettings_LayoutPreferencesUpdateRequired;
 			InstanceViewModel.FolderSettings.SortDirectionPreferenceUpdated -= AppSettings_SortDirectionPreferenceUpdated;

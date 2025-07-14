@@ -17,6 +17,8 @@ namespace Files.App.Data.Contracts
 
 		string Query { get; set; }
 
+		bool IsFilterMode { get; set; }
+
 		void ClearSuggestions();
 
 		void SetSuggestions(IEnumerable<SuggestionModel> suggestions);

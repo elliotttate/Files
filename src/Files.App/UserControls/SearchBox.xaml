@@ -20,6 +20,16 @@
 			FalseValue="&#xE7C3;"
 			TrueValue="&#xE81C;" />
 
+		<converters:BoolToObjectConverter 
+			x:Key="FilterModeToPlaceholderConverter"
+			TrueValue="{helpers:ResourceString Name=Filter}"
+			FalseValue="{helpers:ResourceString Name=Search}" />
+			
+		<converters:BoolToObjectConverter 
+			x:Key="FilterModeToTooltipConverter"
+			TrueValue="{helpers:ResourceString Name=SwitchToSearch}"
+			FalseValue="{helpers:ResourceString Name=SwitchToFilter}" />
+
 		<Style
 			x:Key="TextBoxStyle"
 			BasedOn="{StaticResource AutoSuggestBoxTextBoxStyle}"
@@ -73,19 +83,26 @@
 		</DataTemplate>
 	</UserControl.Resources>
 
-	<AutoSuggestBox
-		x:Name="SearchRegion"
-		BorderBrush="{ThemeResource ControlElevationBorderBrush}"
-		GotFocus="{x:Bind SearchBoxViewModel.SearchRegion_GotFocus}"
-		ItemTemplate="{StaticResource SuggestionTemplate}"
-		ItemsSource="{x:Bind SearchBoxViewModel.Suggestions, Mode=OneWay}"
-		KeyDown="SearchRegion_KeyDown"
-		PlaceholderText="{helpers:ResourceString Name=Search}"
-		QuerySubmitted="SearchRegion_QuerySubmitted"
-		Text="{x:Bind SearchBoxViewModel.Query, Mode=TwoWay}"
-		TextBoxStyle="{StaticResource TextBoxStyle}"
-		TextChanged="SearchRegion_TextChanged"
-		UpdateTextOnSelect="False">
+	<Grid>
+		<Grid.ColumnDefinitions>
+			<ColumnDefinition Width="*" />
+			<ColumnDefinition Width="Auto" />
+		</Grid.ColumnDefinitions>
+
+		<AutoSuggestBox
+			x:Name="SearchRegion"
+			Grid.Column="0"
+			BorderBrush="{ThemeResource ControlElevationBorderBrush}"
+			GotFocus="{x:Bind SearchBoxViewModel.SearchRegion_GotFocus}"
+			ItemTemplate="{StaticResource SuggestionTemplate}"
+			ItemsSource="{x:Bind SearchBoxViewModel.Suggestions, Mode=OneWay}"
+			KeyDown="SearchRegion_KeyDown"
+			PlaceholderText="{x:Bind SearchBoxViewModel.IsFilterMode, Mode=OneWay, Converter={StaticResource FilterModeToPlaceholderConverter}}"
+			QuerySubmitted="SearchRegion_QuerySubmitted"
+			Text="{x:Bind SearchBoxViewModel.Query, Mode=TwoWay}"
+			TextBoxStyle="{StaticResource TextBoxStyle}"
+			TextChanged="SearchRegion_TextChanged"
+			UpdateTextOnSelect="False">
 		<AutoSuggestBox.QueryIcon>
 			<AnimatedIcon x:Name="SearchAnimatedIcon" Height="16">
 				<AnimatedIcon.Source>
@@ -106,5 +123,16 @@
 			</Style>
 		</AutoSuggestBox.ItemContainerStyle>
 	</AutoSuggestBox>
+
+		<ToggleButton
+			x:Name="FilterModeToggle"
+			Grid.Column="1"
+			Margin="4,0,0,0"
+			VerticalAlignment="Center"
+			IsChecked="{x:Bind SearchBoxViewModel.IsFilterMode, Mode=TwoWay}"
+			ToolTipService.ToolTip="{x:Bind SearchBoxViewModel.IsFilterMode, Mode=OneWay, Converter={StaticResource FilterModeToTooltipConverter}}">
+			<FontIcon FontSize="12" Glyph="&#xE71C;" />
+		</ToggleButton>
+	</Grid>
 
 </UserControl>

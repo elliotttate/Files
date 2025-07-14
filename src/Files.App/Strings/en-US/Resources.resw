@@ -189,6 +189,15 @@
   <data name="Search" xml:space="preserve">
     <value>Search</value>
   </data>
+  <data name="Filter" xml:space="preserve">
+    <value>Filter</value>
+  </data>
+  <data name="SwitchToSearch" xml:space="preserve">
+    <value>Switch to search mode</value>
+  </data>
+  <data name="SwitchToFilter" xml:space="preserve">
+    <value>Switch to filter mode</value>
+  </data>
   <data name="RecentItemDescription.Text" xml:space="preserve">
     <value>Files you've previously accessed will show up here</value>
   </data>

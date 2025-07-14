@@ -147,6 +147,11 @@ namespace Files.App.Views.Shells
 				ToolbarViewModel.SearchBox.Query = string.Empty;
 				ToolbarViewModel.IsSearchBoxVisible = false;
 			}
+			// Clear filter text when navigating, but keep filter mode active
+			if (ToolbarViewModel.SearchBox.IsFilterMode && !string.IsNullOrEmpty(ShellViewModel.FilesAndFoldersFilter))
+			{
+				ShellViewModel.FilesAndFoldersFilter = string.Empty;
+			}
 
 			ToolbarViewModel.UpdateAdditionalActions();
 			if (ItemDisplayFrame.CurrentSourcePageType == (typeof(DetailsLayoutPage))

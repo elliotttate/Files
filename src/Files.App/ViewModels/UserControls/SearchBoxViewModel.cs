@@ -11,6 +11,7 @@ namespace Files.App.ViewModels.UserControls
 {
 	public sealed partial class SearchBoxViewModel : ObservableObject, ISearchBoxViewModel
 	{
+		private readonly IGeneralSettingsService GeneralSettingsService = Ioc.Default.GetRequiredService<IGeneralSettingsService>();
 		private string query;
 		public string Query
 		{
@@ -19,6 +20,20 @@ namespace Files.App.ViewModels.UserControls
 		}
 
 		public bool WasQuerySubmitted { get; set; } = false;
+
+		private bool isFilterMode;
+		public bool IsFilterMode
+		{
+			get => isFilterMode;
+			set
+			{
+				if (SetProperty(ref isFilterMode, value))
+				{
+					// Save the preference when it changes
+					GeneralSettingsService.DefaultSearchBoxFilterMode = value;
+				}
+			}
+		}
 
 		public event TypedEventHandler<ISearchBoxViewModel, SearchBoxTextChangedEventArgs>? TextChanged;
 
@@ -29,6 +44,12 @@ namespace Files.App.ViewModels.UserControls
 		private readonly SuggestionComparer suggestionComparer = new SuggestionComparer();
 
 		public ObservableCollection<SuggestionModel> Suggestions { get; } = [];
+
+		public SearchBoxViewModel()
+		{
+			// Load the filter mode preference from settings
+			isFilterMode = GeneralSettingsService.DefaultSearchBoxFilterMode;
+		}
 
 		private readonly List<SuggestionModel> oldQueries = [];
 

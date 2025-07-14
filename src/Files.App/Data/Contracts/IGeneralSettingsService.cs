@@ -299,5 +299,10 @@ namespace Files.App.Data.Contracts
 		/// Gets or sets a value indicating whether or not to enable the Omnibar.
 		/// </summary>
 		bool EnableOmnibar { get; set; }
+
+		/// <summary>
+		/// Gets or sets a value indicating whether or not to enable filter mode by default in the search box.
+		/// </summary>
+		bool DefaultSearchBoxFilterMode { get; set; }
 	}
 }
