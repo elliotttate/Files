@@ -17,6 +17,11 @@ namespace Files.App.Utils.Storage
 
 		private static readonly string folderTypeTextLocalized = Strings.Folder.GetLocalizedResource();
 
+		// Performance optimization: Configurable batch sizes
+		private const int INITIAL_BATCH_SIZE = 50;  // First batch to show items quickly
+		private const int REGULAR_BATCH_SIZE = 100; // Subsequent batches
+		private const int BATCH_DELAY_MS = 10;      // Small delay between batches to keep UI responsive
+
 		public static async Task<List<ListedItem>> ListEntries(
 			string path,
 			IntPtr hFile,
@@ -26,9 +31,10 @@ namespace Files.App.Utils.Storage
 			Func<List<ListedItem>, Task> intermediateAction
 		)
 		{
-			var sampler = new IntervalSampler(500);
+			var sampler = new IntervalSampler(100); // Reduced from 500ms for more responsive updates
 			var tempList = new List<ListedItem>();
 			var count = 0;
+			var batchCount = 0;
 
 			IUserSettingsService userSettingsService = Ioc.Default.GetRequiredService<IUserSettingsService>();
 			bool CalculateFolderSizes = userSettingsService.FoldersSettingsService.CalculateFolderSizes;
@@ -90,12 +96,18 @@ namespace Files.App.Utils.Storage
 				if (cancellationToken.IsCancellationRequested || count == countLimit)
 					break;
 
-				if (intermediateAction is not null && (count == 32 || sampler.CheckNow()))
+				// Progressive loading: Use smaller initial batch, then larger batches
+				var currentBatchSize = batchCount == 0 ? INITIAL_BATCH_SIZE : REGULAR_BATCH_SIZE;
+				
+				if (intermediateAction is not null && (tempList.Count >= currentBatchSize || sampler.CheckNow()))
 				{
 					await intermediateAction(tempList);
-
-					// clear the temporary list every time we do an intermediate action
 					tempList.Clear();
+					batchCount++;
+					
+					// Small delay between batches to keep UI responsive
+					if (batchCount > 1)
+						await Task.Delay(BATCH_DELAY_MS, cancellationToken);
 				}
 			} while (Win32PInvoke.FindNextFile(hFile, out findData));
 

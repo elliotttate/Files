@@ -815,8 +815,12 @@ namespace Files.App.ViewModels
 				if (filesAndFolders.Count == 0)
 					return;
 
-				filesAndFolders = new ConcurrentCollection<ListedItem>(SortingHelper.OrderFileList(filesAndFolders.ToList(), folderSettings.DirectorySortOption, folderSettings.DirectorySortDirection,
-					folderSettings.SortDirectoriesAlongsideFiles, folderSettings.SortFilesFirst));
+				// Performance: Only sort if we have items and sorting is needed
+				if (filesAndFolders.Count > 1)
+				{
+					filesAndFolders = new ConcurrentCollection<ListedItem>(SortingHelper.OrderFileList(filesAndFolders.ToList(), folderSettings.DirectorySortOption, folderSettings.DirectorySortDirection,
+						folderSettings.SortDirectoriesAlongsideFiles, folderSettings.SortFilesFirst));
+				}
 			}
 
 			if (Win32Helper.IsHasThreadAccessPropertyPresent && dispatcherQueue.HasThreadAccess)
@@ -1826,7 +1830,11 @@ namespace Files.App.ViewModels
 						List<ListedItem> fileList = await Win32StorageEnumerator.ListEntries(path, hFile, findData, cancellationToken, -1, intermediateAction: async (intermediateList) =>
 						{
 							filesAndFolders.AddRange(intermediateList);
-							await ApplyFilesAndFoldersChangesAsync();
+							// Only update UI for larger batches to improve performance
+							if (intermediateList.Count >= 50)
+							{
+								await ApplyFilesAndFoldersChangesAsync();
+							}
 						});
 
 						filesAndFolders.AddRange(fileList);
@@ -1834,6 +1842,7 @@ namespace Files.App.ViewModels
 
 						await OrderFilesAndFoldersAsync();
 						await ApplyFilesAndFoldersChangesAsync();
+						
 						await dispatcherQueue.EnqueueOrInvokeAsync(CheckForSolutionFile, Microsoft.UI.Dispatching.DispatcherQueuePriority.Low);
 						await dispatcherQueue.EnqueueOrInvokeAsync(() =>
 						{
