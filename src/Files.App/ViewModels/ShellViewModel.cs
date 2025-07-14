@@ -750,7 +750,7 @@ namespace Files.App.ViewModels
 				var isSemaphoreReleased = false;
 				try
 				{
-					await dispatcherQueue.EnqueueOrInvokeAsync(() =>
+					await dispatcherQueue.EnqueueOrInvokeAsync(async () =>
 					{
 						try
 						{
@@ -761,9 +761,59 @@ namespace Files.App.ViewModels
 
 							FilesAndFolders.Clear();
 							if (string.IsNullOrEmpty(FilesAndFoldersFilter))
+							{
 								FilesAndFolders.AddRange(filesAndFoldersLocal);
+							}
 							else
-								FilesAndFolders.AddRange(filesAndFoldersLocal.Where(x => x.Name.Contains(FilesAndFoldersFilter, StringComparison.OrdinalIgnoreCase)));
+							{
+								// Always use fuzzy matching for better search results
+								var fuzzySearchService = Ioc.Default.GetService<Services.FuzzyMatcher.IFuzzySearchService>();
+								if (fuzzySearchService != null)
+								{
+									try
+									{
+										// Use async version with cancellation support
+										var filterTask = Task.Run(async () => 
+											await fuzzySearchService.FilterItemsAsync(filesAndFoldersLocal, FilesAndFoldersFilter, addFilesCTS.Token),
+											addFilesCTS.Token);
+										
+										// Wait for filtering with timeout to prevent hanging
+										if (await Task.WhenAny(filterTask, Task.Delay(5000, addFilesCTS.Token)) == filterTask)
+										{
+											var filteredItems = await filterTask;
+											if (!addFilesCTS.IsCancellationRequested)
+											{
+												FilesAndFolders.AddRange(filteredItems);
+											}
+										}
+										else
+										{
+											// Timeout - fall back to simple contains
+											App.Logger.LogWarning("Fuzzy search timed out, falling back to simple contains");
+											var filtered = filesAndFoldersLocal
+												.Where(x => x.Name.Contains(FilesAndFoldersFilter, StringComparison.OrdinalIgnoreCase))
+												.Take(500)
+												.ToList();
+											FilesAndFolders.AddRange(filtered);
+										}
+									}
+									catch (Exception ex)
+									{
+										// On any error, fall back to simple contains
+										App.Logger.LogWarning(ex, "Fuzzy search failed, falling back to simple contains");
+										var filtered = filesAndFoldersLocal
+											.Where(x => x.Name.Contains(FilesAndFoldersFilter, StringComparison.OrdinalIgnoreCase))
+											.Take(500)
+											.ToList();
+										FilesAndFolders.AddRange(filtered);
+									}
+								}
+								else
+								{
+									// Fallback to simple contains if fuzzy search service is not available
+									FilesAndFolders.AddRange(filesAndFoldersLocal.Where(x => x.Name.Contains(FilesAndFoldersFilter, StringComparison.OrdinalIgnoreCase)));
+								}
+							}
 
 							if (folderSettings.DirectoryGroupOption != GroupOption.None)
 								OrderGroups();

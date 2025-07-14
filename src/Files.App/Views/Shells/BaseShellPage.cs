@@ -366,20 +366,41 @@ namespace Files.App.Views.Shells
 			}
 		}
 
+		private CancellationTokenSource _filterDebounceTokenSource;
+		private const int FilterDebounceDelayMs = 300;
+
 		protected async void ShellPage_TextChanged(ISearchBoxViewModel sender, SearchBoxTextChangedEventArgs e)
 		{
 			// In filter mode, we need to handle both user input and programmatic changes (like escape key)
 			if (e.Reason != SearchBoxTextChangeReason.UserInput && !sender.IsFilterMode)
 				return;
 
+			// Cancel any previous pending filter operation
+			_filterDebounceTokenSource?.Cancel();
+			_filterDebounceTokenSource = new CancellationTokenSource();
+			var cancellationToken = _filterDebounceTokenSource.Token;
+
 			if (sender.IsFilterMode)
 			{
-				// In filter mode, apply the filter to current directory
-				ShellViewModel.FilesAndFoldersFilter = sender.Query;
-				await ShellViewModel.ApplyFilesAndFoldersChangesAsync();
-				
-				// Clear suggestions in filter mode
-				sender.ClearSuggestions();
+				// Debounce the filter to avoid processing on every keystroke
+				try
+				{
+					await Task.Delay(FilterDebounceDelayMs, cancellationToken);
+					
+					if (!cancellationToken.IsCancellationRequested)
+					{
+						// In filter mode, apply the filter to current directory
+						ShellViewModel.FilesAndFoldersFilter = sender.Query;
+						await ShellViewModel.ApplyFilesAndFoldersChangesAsync();
+						
+						// Clear suggestions in filter mode
+						sender.ClearSuggestions();
+					}
+				}
+				catch (TaskCanceledException)
+				{
+					// Expected when user types another character
+				}
 			}
 			else
 			{
@@ -866,6 +887,8 @@ namespace Files.App.Views.Shells
 
 		public virtual void Dispose()
 		{
+			_filterDebounceTokenSource?.Cancel();
+			_filterDebounceTokenSource?.Dispose();
 			PreviewKeyDown -= ShellPage_PreviewKeyDown;
 			PointerPressed -= CoreWindow_PointerPressed;
 			drivesViewModel.PropertyChanged -= DrivesManager_PropertyChanged;
