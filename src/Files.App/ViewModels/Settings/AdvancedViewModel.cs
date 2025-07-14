@@ -370,6 +370,19 @@ namespace Files.App.ViewModels.Settings
 			}
 		}
 
+		public int PreferredSearchEngineIndex
+		{
+			get => (int)UserSettingsService.GeneralSettingsService.PreferredSearchEngine;
+			set
+			{
+				if (value == (int)UserSettingsService.GeneralSettingsService.PreferredSearchEngine)
+					return;
+
+				UserSettingsService.GeneralSettingsService.PreferredSearchEngine = (Data.Enums.SearchEngine)value;
+				OnPropertyChanged();
+			}
+		}
+
 		public async Task OpenFilesOnWindowsStartupAsync()
 		{
 			var stateMode = await ReadState();

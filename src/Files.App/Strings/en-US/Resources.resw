@@ -4229,6 +4229,21 @@
   <data name="EnableOmnibar" xml:space="preserve">
     <value>Enable Omnibar</value>
   </data>
+  <data name="PreferredSearchEngine" xml:space="preserve">
+    <value>Preferred search engine</value>
+  </data>
+  <data name="PreferredSearchEngineDescription" xml:space="preserve">
+    <value>Choose the search engine to use for searching and filtering files</value>
+  </data>
+  <data name="SearchEngineBuiltInFuzzy" xml:space="preserve">
+    <value>Built-in fuzzy search (fzf)</value>
+  </data>
+  <data name="SearchEngineEverything" xml:space="preserve">
+    <value>Everything (requires Everything installed)</value>
+  </data>
+  <data name="SearchEngineSimpleContains" xml:space="preserve">
+    <value>Simple text search</value>
+  </data>
   <data name="SectionsHiddenMessage" xml:space="preserve">
     <value>You can add sections to the sidebar by right-clicking and selecting the sections you want to add</value>
   </data>

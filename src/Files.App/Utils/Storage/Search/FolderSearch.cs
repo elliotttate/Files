@@ -71,6 +71,31 @@ namespace Files.App.Utils.Storage
 		{
 			try
 			{
+				// Check if we should use Everything for global search
+				var userSettingsService = Ioc.Default.GetRequiredService<IUserSettingsService>();
+				if (userSettingsService.GeneralSettingsService.PreferredSearchEngine == Files.App.Data.Enums.SearchEngine.Everything)
+				{
+					var everythingService = Ioc.Default.GetService<Files.App.Services.Search.IEverythingSearchService>();
+					if (everythingService != null && everythingService.IsEverythingAvailable())
+					{
+						return everythingService.SearchAsync(Query, Folder, token).ContinueWith(t =>
+						{
+							if (t.IsCompletedSuccessfully)
+							{
+								foreach (var item in t.Result.Take((int)UsedMaxItemCount))
+								{
+									results.Add(item);
+									if (results.Count == 32 || results.Count % 300 == 0)
+									{
+										SearchTick?.Invoke(this, EventArgs.Empty);
+									}
+								}
+							}
+						}, token);
+					}
+				}
+
+				// Fall back to default search
 				if (App.LibraryManager.TryGetLibrary(Folder, out var library))
 				{
 					return AddItemsForLibraryAsync(library, results, token);

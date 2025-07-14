@@ -136,5 +136,11 @@
 	<ItemGroup>
 		<AdditionalFiles Include="Strings\en-US\Resources.resw" />
 	</ItemGroup>
+
+	<ItemGroup>
+		<Content Include="Libraries\Everything64.dll">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</Content>
+	</ItemGroup>
   
 </Project>

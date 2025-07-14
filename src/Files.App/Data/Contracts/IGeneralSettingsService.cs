@@ -304,5 +304,10 @@ namespace Files.App.Data.Contracts
 		/// Gets or sets a value indicating whether or not to enable filter mode by default in the search box.
 		/// </summary>
 		bool DefaultSearchBoxFilterMode { get; set; }
+
+		/// <summary>
+		/// Gets or sets the preferred search engine for file searching.
+		/// </summary>
+		SearchEngine PreferredSearchEngine { get; set; }
 	}
 }

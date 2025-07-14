@@ -766,52 +766,107 @@ namespace Files.App.ViewModels
 							}
 							else
 							{
-								// Always use fuzzy matching for better search results
-								var fuzzySearchService = Ioc.Default.GetService<Services.FuzzyMatcher.IFuzzySearchService>();
-								if (fuzzySearchService != null)
+								// Use the preferred search engine
+								var searchEngine = UserSettingsService.GeneralSettingsService.PreferredSearchEngine;
+								
+								switch (searchEngine)
 								{
-									try
-									{
-										// Use async version with cancellation support
-										var filterTask = Task.Run(async () => 
-											await fuzzySearchService.FilterItemsAsync(filesAndFoldersLocal, FilesAndFoldersFilter, addFilesCTS.Token),
-											addFilesCTS.Token);
-										
-										// Wait for filtering with timeout to prevent hanging
-										if (await Task.WhenAny(filterTask, Task.Delay(5000, addFilesCTS.Token)) == filterTask)
+									case Data.Enums.SearchEngine.Everything:
 										{
-											var filteredItems = await filterTask;
-											if (!addFilesCTS.IsCancellationRequested)
+											var everythingService = Ioc.Default.GetService<Services.Search.IEverythingSearchService>();
+											if (everythingService != null && everythingService.IsEverythingAvailable())
 											{
-												FilesAndFolders.AddRange(filteredItems);
+												try
+												{
+													var filterTask = Task.Run(async () => 
+														await everythingService.FilterItemsAsync(filesAndFoldersLocal, FilesAndFoldersFilter, addFilesCTS.Token),
+														addFilesCTS.Token);
+													
+													// Wait for filtering with timeout
+													if (await Task.WhenAny(filterTask, Task.Delay(5000, addFilesCTS.Token)) == filterTask)
+													{
+														var filteredItems = await filterTask;
+														if (!addFilesCTS.IsCancellationRequested)
+														{
+															FilesAndFolders.AddRange(filteredItems);
+														}
+													}
+													else
+													{
+														// Timeout - fall back to fuzzy search
+														App.Logger.LogWarning("Everything search timed out, falling back to fuzzy search");
+														goto case Data.Enums.SearchEngine.BuiltInFuzzy;
+													}
+												}
+												catch (Exception ex)
+												{
+													// On error, fall back to fuzzy search
+													App.Logger.LogWarning(ex, "Everything search failed, falling back to fuzzy search");
+													goto case Data.Enums.SearchEngine.BuiltInFuzzy;
+												}
 											}
+											else
+											{
+												// Everything not available, fall back to fuzzy search
+												goto case Data.Enums.SearchEngine.BuiltInFuzzy;
+											}
+											break;
 										}
-										else
+									
+									case Data.Enums.SearchEngine.BuiltInFuzzy:
 										{
-											// Timeout - fall back to simple contains
-											App.Logger.LogWarning("Fuzzy search timed out, falling back to simple contains");
+											var fuzzySearchService = Ioc.Default.GetService<Services.FuzzyMatcher.IFuzzySearchService>();
+											if (fuzzySearchService != null)
+											{
+												try
+												{
+													// Use async version with cancellation support
+													var filterTask = Task.Run(async () => 
+														await fuzzySearchService.FilterItemsAsync(filesAndFoldersLocal, FilesAndFoldersFilter, addFilesCTS.Token),
+														addFilesCTS.Token);
+													
+													// Wait for filtering with timeout to prevent hanging
+													if (await Task.WhenAny(filterTask, Task.Delay(5000, addFilesCTS.Token)) == filterTask)
+													{
+														var filteredItems = await filterTask;
+														if (!addFilesCTS.IsCancellationRequested)
+														{
+															FilesAndFolders.AddRange(filteredItems);
+														}
+													}
+													else
+													{
+														// Timeout - fall back to simple contains
+														App.Logger.LogWarning("Fuzzy search timed out, falling back to simple contains");
+														goto case Data.Enums.SearchEngine.SimpleContains;
+													}
+												}
+												catch (Exception ex)
+												{
+													// On any error, fall back to simple contains
+													App.Logger.LogWarning(ex, "Fuzzy search failed, falling back to simple contains");
+													goto case Data.Enums.SearchEngine.SimpleContains;
+												}
+											}
+											else
+											{
+												// Fuzzy search not available, fall back to simple contains
+												goto case Data.Enums.SearchEngine.SimpleContains;
+											}
+											break;
+										}
+									
+									case Data.Enums.SearchEngine.SimpleContains:
+									default:
+										{
+											// Simple contains search
 											var filtered = filesAndFoldersLocal
 												.Where(x => x.Name.Contains(FilesAndFoldersFilter, StringComparison.OrdinalIgnoreCase))
 												.Take(500)
 												.ToList();
 											FilesAndFolders.AddRange(filtered);
+											break;
 										}
-									}
-									catch (Exception ex)
-									{
-										// On any error, fall back to simple contains
-										App.Logger.LogWarning(ex, "Fuzzy search failed, falling back to simple contains");
-										var filtered = filesAndFoldersLocal
-											.Where(x => x.Name.Contains(FilesAndFoldersFilter, StringComparison.OrdinalIgnoreCase))
-											.Take(500)
-											.ToList();
-										FilesAndFolders.AddRange(filtered);
-									}
-								}
-								else
-								{
-									// Fallback to simple contains if fuzzy search service is not available
-									FilesAndFolders.AddRange(filesAndFoldersLocal.Where(x => x.Name.Contains(FilesAndFoldersFilter, StringComparison.OrdinalIgnoreCase)));
 								}
 							}
 

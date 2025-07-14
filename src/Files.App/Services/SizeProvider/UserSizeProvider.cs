@@ -9,6 +9,8 @@ namespace Files.App.Services
 	{
 		private readonly IFoldersSettingsService folderPreferences
 			= Ioc.Default.GetRequiredService<IFoldersSettingsService>();
+		private readonly IGeneralSettingsService generalSettings
+			= Ioc.Default.GetRequiredService<IGeneralSettingsService>();
 
 		private ISizeProvider provider;
 
@@ -20,6 +22,7 @@ namespace Files.App.Services
 			provider.SizeChanged += Provider_SizeChanged;
 
 			folderPreferences.PropertyChanged += FolderPreferences_PropertyChanged;
+			generalSettings.PropertyChanged += GeneralSettings_PropertyChanged;
 		}
 
 		public Task CleanAsync()
@@ -38,10 +41,27 @@ namespace Files.App.Services
 		{
 			provider.Dispose();
 			folderPreferences.PropertyChanged -= FolderPreferences_PropertyChanged;
+			generalSettings.PropertyChanged -= GeneralSettings_PropertyChanged;
 		}
 
 		private ISizeProvider GetProvider()
-			=> folderPreferences.CalculateFolderSizes ? new DrivesSizeProvider() : new NoSizeProvider();
+		{
+			if (!folderPreferences.CalculateFolderSizes)
+				return new NoSizeProvider();
+
+			// Use Everything for folder sizes if it's selected and available
+			if (generalSettings.PreferredSearchEngine == Files.App.Data.Enums.SearchEngine.Everything)
+			{
+				var everythingService = Ioc.Default.GetService<Files.App.Services.Search.IEverythingSearchService>();
+				if (everythingService != null && everythingService.IsEverythingAvailable())
+				{
+					return new EverythingSizeProvider();
+				}
+			}
+
+			// Fall back to standard provider
+			return new DrivesSizeProvider();
+		}
 
 		private async void FolderPreferences_PropertyChanged(object sender, PropertyChangedEventArgs e)
 		{
@@ -51,6 +71,21 @@ namespace Files.App.Services
 				provider.SizeChanged -= Provider_SizeChanged;
 				provider = GetProvider();
 				provider.SizeChanged += Provider_SizeChanged;
+			}
+		}
+
+		private async void GeneralSettings_PropertyChanged(object sender, PropertyChangedEventArgs e)
+		{
+			if (e.PropertyName is nameof(IGeneralSettingsService.PreferredSearchEngine))
+			{
+				// Only update if folder size calculation is enabled
+				if (folderPreferences.CalculateFolderSizes)
+				{
+					await provider.ClearAsync();
+					provider.SizeChanged -= Provider_SizeChanged;
+					provider = GetProvider();
+					provider.SizeChanged += Provider_SizeChanged;
+				}
 			}
 		}
 
