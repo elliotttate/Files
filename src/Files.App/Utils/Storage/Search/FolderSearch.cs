@@ -67,54 +67,104 @@ namespace Files.App.Utils.Storage
 			}
 		}
 
-		public Task SearchAsync(IList<ListedItem> results, CancellationToken token)
+		public async Task SearchAsync(IList<ListedItem> results, CancellationToken token)
 		{
 			try
 			{
+				App.Logger?.LogInformation($"=== FolderSearch.SearchAsync START === Query: '{Query}', Folder: '{Folder}'");
+				
 				// Check if we should use Everything for global search
 				var userSettingsService = Ioc.Default.GetRequiredService<IUserSettingsService>();
-				if (userSettingsService.GeneralSettingsService.PreferredSearchEngine == Files.App.Data.Enums.SearchEngine.Everything)
+				var searchEngine = userSettingsService.GeneralSettingsService.PreferredSearchEngine;
+				App.Logger?.LogInformation($"Search Engine Setting: {searchEngine}");
+				
+				if (searchEngine == Files.App.Data.Enums.SearchEngine.Everything)
 				{
 					var everythingService = Ioc.Default.GetService<Files.App.Services.Search.IEverythingSearchService>();
-					if (everythingService != null && everythingService.IsEverythingAvailable())
+					if (everythingService != null)
 					{
-						return everythingService.SearchAsync(Query, Folder, token).ContinueWith(t =>
+						var isAvailable = everythingService.IsEverythingAvailable();
+						App.Logger?.LogInformation($"Everything Service Available: {isAvailable}");
+						
+						if (isAvailable)
 						{
-							if (t.IsCompletedSuccessfully)
+							App.Logger?.LogInformation("Using Everything for search");
+							try
 							{
-								foreach (var item in t.Result.Take((int)UsedMaxItemCount))
+								var everythingResults = await everythingService.SearchAsync(Query, Folder, token);
+								App.Logger?.LogInformation($"Everything search completed with {everythingResults.Count} results");
+								App.Logger?.LogInformation($"MaxItemCount: {MaxItemCount}, UsedMaxItemCount: {UsedMaxItemCount}");
+								App.Logger?.LogInformation($"results is null: {results == null}, results.Count before: {results?.Count ?? -1}");
+								App.Logger?.LogInformation($"everythingResults is null: {everythingResults == null}");
+								
+								if (everythingResults != null && everythingResults.Count > 0)
 								{
+									App.Logger?.LogInformation($"First result: {everythingResults[0]?.ItemPath ?? "null"}");
+								}
+								
+								int addedCount = 0;
+								// Fix: UsedMaxItemCount can be uint.MaxValue which overflows when cast to int
+								var itemsToTake = UsedMaxItemCount == uint.MaxValue ? everythingResults.Count : Math.Min(everythingResults.Count, (int)UsedMaxItemCount);
+								App.Logger?.LogInformation($"Taking {itemsToTake} items from {everythingResults.Count} results");
+								
+								foreach (var item in everythingResults.Take(itemsToTake))
+								{
+									if (item == null)
+									{
+										App.Logger?.LogWarning("Null item in everythingResults");
+										continue;
+									}
 									results.Add(item);
+									addedCount++;
 									if (results.Count == 32 || results.Count % 300 == 0)
 									{
 										SearchTick?.Invoke(this, EventArgs.Empty);
 									}
 								}
+								
+								App.Logger?.LogInformation($"Added {addedCount} items to results, final results.Count: {results.Count}");
+								return; // Exit early since we used Everything
 							}
-						}, token);
+							catch (OperationCanceledException)
+							{
+								App.Logger?.LogWarning("Everything search was cancelled");
+								return;
+							}
+							catch (Exception ex)
+							{
+								App.Logger?.LogError(ex, "Everything search failed");
+								// Fall through to use default search
+							}
+						}
 					}
+					else
+					{
+						App.Logger?.LogWarning("Everything service not found in DI container");
+					}
+				}
+				else
+				{
+					App.Logger?.LogInformation($"Not using Everything because search engine is set to: {searchEngine}");
 				}
 
 				// Fall back to default search
 				if (App.LibraryManager.TryGetLibrary(Folder, out var library))
 				{
-					return AddItemsForLibraryAsync(library, results, token);
+					await AddItemsForLibraryAsync(library, results, token);
 				}
 				else if (Folder == "Home")
 				{
-					return AddItemsForHomeAsync(results, token);
+					await AddItemsForHomeAsync(results, token);
 				}
 				else
 				{
-					return AddItemsAsync(Folder, results, token);
+					await AddItemsAsync(Folder, results, token);
 				}
 			}
 			catch (Exception e)
 			{
 				App.Logger.LogWarning(e, "Search failure");
 			}
-
-			return Task.CompletedTask;
 		}
 
 		private async Task AddItemsForHomeAsync(IList<ListedItem> results, CancellationToken token)

@@ -31,103 +31,284 @@ namespace Files.App.Services.Search
 		private const int EVERYTHING_REQUEST_DATE_CREATED = 0x00000020;
 		private const int EVERYTHING_REQUEST_ATTRIBUTES = 0x00000100;
 
-		// Everything API imports - using 64-bit version
-		[DllImport("Everything64.dll", CharSet = CharSet.Unicode)]
+		// Architecture-aware DLL name
+		private static readonly string EverythingDllName = Environment.Is64BitProcess ? "Everything64.dll" : "Everything32.dll";
+
+		// Everything API imports - using architecture-aware DLL resolution
+		[DllImport("Everything", EntryPoint = "Everything_SetSearchW", CharSet = CharSet.Unicode)]
 		private static extern uint Everything_SetSearchW(string lpSearchString);
 		
-		[DllImport("Everything64.dll")]
+		[DllImport("Everything", EntryPoint = "Everything_SetMatchPath")]
 		private static extern void Everything_SetMatchPath(bool bEnable);
 		
-		[DllImport("Everything64.dll")]
+		[DllImport("Everything", EntryPoint = "Everything_SetMatchCase")]
 		private static extern void Everything_SetMatchCase(bool bEnable);
 		
-		[DllImport("Everything64.dll")]
+		[DllImport("Everything", EntryPoint = "Everything_SetMatchWholeWord")]
 		private static extern void Everything_SetMatchWholeWord(bool bEnable);
 		
-		[DllImport("Everything64.dll")]
+		[DllImport("Everything", EntryPoint = "Everything_SetRegex")]
 		private static extern void Everything_SetRegex(bool bEnable);
 		
-		[DllImport("Everything64.dll")]
+		[DllImport("Everything", EntryPoint = "Everything_SetMax")]
 		private static extern void Everything_SetMax(uint dwMax);
 		
-		[DllImport("Everything64.dll")]
+		[DllImport("Everything", EntryPoint = "Everything_SetOffset")]
 		private static extern void Everything_SetOffset(uint dwOffset);
 		
-		[DllImport("Everything64.dll")]
+		[DllImport("Everything", EntryPoint = "Everything_SetRequestFlags")]
 		private static extern void Everything_SetRequestFlags(uint dwRequestFlags);
 		
-		[DllImport("Everything64.dll")]
+		[DllImport("Everything", EntryPoint = "Everything_QueryW")]
 		private static extern bool Everything_QueryW(bool bWait);
 		
-		[DllImport("Everything64.dll")]
+		[DllImport("Everything", EntryPoint = "Everything_GetNumResults")]
 		private static extern uint Everything_GetNumResults();
 		
-		[DllImport("Everything64.dll")]
+		[DllImport("Everything", EntryPoint = "Everything_GetLastError")]
 		private static extern uint Everything_GetLastError();
 		
-		[DllImport("Everything64.dll")]
+		[DllImport("Everything", EntryPoint = "Everything_IsFileResult")]
 		private static extern bool Everything_IsFileResult(uint nIndex);
 		
-		[DllImport("Everything64.dll")]
+		[DllImport("Everything", EntryPoint = "Everything_IsFolderResult")]
 		private static extern bool Everything_IsFolderResult(uint nIndex);
 		
-		[DllImport("Everything64.dll", CharSet = CharSet.Unicode)]
+		[DllImport("Everything", EntryPoint = "Everything_GetResultPath", CharSet = CharSet.Unicode)]
 		private static extern IntPtr Everything_GetResultPath(uint nIndex);
 		
-		[DllImport("Everything64.dll", CharSet = CharSet.Unicode)]
+		[DllImport("Everything", EntryPoint = "Everything_GetResultFileName", CharSet = CharSet.Unicode)]
 		private static extern IntPtr Everything_GetResultFileName(uint nIndex);
 		
-		[DllImport("Everything64.dll")]
+		[DllImport("Everything", EntryPoint = "Everything_GetResultDateModified")]
 		private static extern bool Everything_GetResultDateModified(uint nIndex, out long lpFileTime);
 		
-		[DllImport("Everything64.dll")]
+		[DllImport("Everything", EntryPoint = "Everything_GetResultDateCreated")]
 		private static extern bool Everything_GetResultDateCreated(uint nIndex, out long lpFileTime);
 		
-		[DllImport("Everything64.dll")]
+		[DllImport("Everything", EntryPoint = "Everything_GetResultSize")]
 		private static extern bool Everything_GetResultSize(uint nIndex, out long lpFileSize);
 		
-		[DllImport("Everything64.dll")]
+		[DllImport("Everything", EntryPoint = "Everything_GetResultAttributes")]
 		private static extern uint Everything_GetResultAttributes(uint nIndex);
 		
-		[DllImport("Everything64.dll")]
+		[DllImport("Everything", EntryPoint = "Everything_Reset")]
 		private static extern void Everything_Reset();
 		
-		[DllImport("Everything64.dll")]
+		[DllImport("Everything", EntryPoint = "Everything_CleanUp")]
 		private static extern void Everything_CleanUp();
 		
-		[DllImport("Everything64.dll")]
+		[DllImport("Everything", EntryPoint = "Everything_IsDBLoaded")]
 		private static extern bool Everything_IsDBLoaded();
 
-		private readonly IUserSettingsService _userSettingsService;
+		// Win32 API imports for DLL loading
+		[DllImport("kernel32.dll", SetLastError = true)]
+		private static extern IntPtr LoadLibrary(string lpLibFileName);
+		
+		[DllImport("kernel32.dll", SetLastError = true)]
+		private static extern bool FreeLibrary(IntPtr hLibModule);
+		
+		[DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+		private static extern bool SetDllDirectory(string lpPathName);
+		
+		[DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+		private static extern IntPtr AddDllDirectory(string newDirectory);
+		
+		[DllImport("kernel32.dll", SetLastError = true)]
+		private static extern bool RemoveDllDirectory(IntPtr cookie);
 
-		public EverythingSearchService()
+		private readonly IUserSettingsService _userSettingsService;
+		private static readonly object _dllSetupLock = new object();
+		private static IntPtr _everythingModule = IntPtr.Zero;
+		private static readonly List<IntPtr> _dllDirectoryCookies = new();
+		private static bool _dllDirectorySet = false;
+		private static bool _everythingAvailable = false;
+		private static bool _availabilityChecked = false;
+
+		static EverythingSearchService()
 		{
-			_userSettingsService = Ioc.Default.GetRequiredService<IUserSettingsService>();
+			// Set up DLL import resolver for architecture-aware loading
+			NativeLibrary.SetDllImportResolver(typeof(EverythingSearchService).Assembly, DllImportResolver);
+		}
+
+		public EverythingSearchService(IUserSettingsService userSettingsService)
+		{
+			_userSettingsService = userSettingsService;
+			
+			// Set up DLL search path if not already done
+			lock (_dllSetupLock)
+			{
+				if (!_dllDirectorySet)
+				{
+					SetupDllSearchPath();
+					_dllDirectorySet = true;
+				}
+			}
+		}
+
+		private static IntPtr DllImportResolver(string libraryName, System.Reflection.Assembly assembly, DllImportSearchPath? searchPath)
+		{
+			if (libraryName == "Everything")
+			{
+				lock (_dllSetupLock)
+				{
+					if (_everythingModule != IntPtr.Zero)
+						return _everythingModule;
+
+					// Try to load Everything DLL from various locations
+					var appDirectory = AppContext.BaseDirectory;
+					var possiblePaths = new[]
+					{
+						Path.Combine(appDirectory, EverythingDllName),
+						Path.Combine(appDirectory, "Libraries", EverythingDllName),
+						Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Everything", EverythingDllName),
+						Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Everything", EverythingDllName),
+						EverythingDllName // Try system path
+					};
+
+					foreach (var path in possiblePaths)
+					{
+						if (File.Exists(path))
+						{
+							_everythingModule = LoadLibrary(path);
+							if (_everythingModule != IntPtr.Zero)
+							{
+								App.Logger?.LogInformation($"Successfully loaded Everything DLL from: {path}");
+								return _everythingModule;
+							}
+						}
+					}
+
+					// If not found, let the default resolver handle it
+					return IntPtr.Zero;
+				}
+			}
+
+			// Use default resolver for other libraries
+			return NativeLibrary.Load(libraryName, assembly, searchPath);
+		}
+
+		private static void SetupDllSearchPath()
+		{
+			try
+			{
+				// Get the application directory
+				var appDirectory = AppContext.BaseDirectory;
+				var searchPaths = new[]
+				{
+					appDirectory,
+					Path.Combine(appDirectory, "Libraries"),
+					Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Everything"),
+					Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Everything")
+				};
+
+				foreach (var path in searchPaths.Where(Directory.Exists))
+				{
+					try
+					{
+						SetDllDirectory(path);
+						var cookie = AddDllDirectory(path);
+						if (cookie != IntPtr.Zero)
+						{
+							_dllDirectoryCookies.Add(cookie);
+						}
+					}
+					catch (Exception ex)
+					{
+						// Log the error if logging is available
+						System.Diagnostics.Debug.WriteLine($"Failed to add DLL search path {path}: {ex.Message}");
+					}
+				}
+			}
+			catch (Exception ex)
+			{
+				// Log the error if logging is available
+				System.Diagnostics.Debug.WriteLine($"Failed to set DLL search path: {ex.Message}");
+			}
 		}
 
 		public bool IsEverythingAvailable()
 		{
-			try
+			lock (_dllSetupLock)
 			{
-				// Check if Everything is running and database is loaded
-				Everything_Reset();
-				var isLoaded = Everything_IsDBLoaded();
-				Everything_CleanUp();
-				return isLoaded;
-			}
-			catch (DllNotFoundException)
-			{
-				// Everything DLL not found
-				return false;
-			}
-			catch (Exception)
-			{
-				return false;
+				if (_availabilityChecked)
+					return _everythingAvailable;
+
+				try
+				{
+					// Check if the Everything DLL exists
+					var appDirectory = AppContext.BaseDirectory;
+					var possiblePaths = new[]
+					{
+						Path.Combine(appDirectory, EverythingDllName),
+						Path.Combine(appDirectory, "Libraries", EverythingDllName),
+						Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Everything", EverythingDllName),
+						Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Everything", EverythingDllName)
+					};
+
+					bool dllExists = possiblePaths.Any(File.Exists);
+					if (!dllExists)
+					{
+						System.Diagnostics.Debug.WriteLine($"No Everything DLL found in expected locations. Looking for: {EverythingDllName}");
+						_everythingAvailable = false;
+						_availabilityChecked = true;
+						return false;
+					}
+
+					// Test if we can actually load and use the DLL
+					Everything_Reset();
+					var isLoaded = Everything_IsDBLoaded();
+					Everything_CleanUp();
+					
+					_everythingAvailable = isLoaded;
+					_availabilityChecked = true;
+					
+					App.Logger?.LogInformation($"Everything {(Environment.Is64BitProcess ? "64-bit" : "32-bit")} - Available: {_everythingAvailable}");
+					return _everythingAvailable;
+				}
+				catch (DllNotFoundException ex)
+				{
+					System.Diagnostics.Debug.WriteLine($"Everything DLL not found: {ex.Message}");
+					App.Logger?.LogWarning($"Everything DLL not found: {ex.Message}");
+					_everythingAvailable = false;
+					_availabilityChecked = true;
+					return false;
+				}
+				catch (BadImageFormatException ex)
+				{
+					System.Diagnostics.Debug.WriteLine($"Everything DLL architecture mismatch: {ex.Message}. Process is {(Environment.Is64BitProcess ? "64-bit" : "32-bit")}");
+					App.Logger?.LogError($"Everything DLL architecture mismatch. Expected {(Environment.Is64BitProcess ? "64-bit" : "32-bit")} DLL: {ex.Message}");
+					_everythingAvailable = false;
+					_availabilityChecked = true;
+					return false;
+				}
+				catch (EntryPointNotFoundException ex)
+				{
+					System.Diagnostics.Debug.WriteLine($"Everything DLL function not found: {ex.Message}");
+					App.Logger?.LogError($"Everything DLL function not found: {ex.Message}");
+					_everythingAvailable = false;
+					_availabilityChecked = true;
+					return false;
+				}
+				catch (Exception ex)
+				{
+					System.Diagnostics.Debug.WriteLine($"Error checking Everything availability: {ex.Message}");
+					App.Logger?.LogError(ex, "Error checking Everything availability");
+					_everythingAvailable = false;
+					_availabilityChecked = true;
+					return false;
+				}
 			}
 		}
 
 		public async Task<List<ListedItem>> SearchAsync(string query, string searchPath = null, CancellationToken cancellationToken = default)
 		{
+			if (!IsEverythingAvailable())
+			{
+				App.Logger?.LogWarning("Everything is not available for search");
+				return new List<ListedItem>();
+			}
+
 			return await Task.Run(() =>
 			{
 				var results = new List<ListedItem>();
@@ -137,13 +318,7 @@ namespace Files.App.Services.Search
 					Everything_Reset();
 
 					// Set up the search query
-					var searchQuery = query;
-					if (!string.IsNullOrEmpty(searchPath) && searchPath != "Home")
-					{
-						// Limit search to specific path
-						searchQuery = $"\"{searchPath}\\\" {query}";
-					}
-
+					var searchQuery = BuildOptimizedQuery(query, searchPath);
 					Everything_SetSearchW(searchQuery);
 					Everything_SetMatchCase(false);
 					Everything_SetRequestFlags(
@@ -163,12 +338,18 @@ namespace Files.App.Services.Search
 						var error = Everything_GetLastError();
 						if (error == EVERYTHING_ERROR_IPC)
 						{
-							// Everything is not running
+							App.Logger?.LogWarning("Everything IPC error: Everything is not running");
+							return results;
+						}
+						else
+						{
+							App.Logger?.LogError($"Everything query failed with error code: {error}");
 							return results;
 						}
 					}
 
 					var numResults = Everything_GetNumResults();
+					App.Logger?.LogDebug($"Everything returned {numResults} results");
 
 					for (uint i = 0; i < numResults; i++)
 					{
@@ -179,6 +360,10 @@ namespace Files.App.Services.Search
 						{
 							var fileName = Marshal.PtrToStringUni(Everything_GetResultFileName(i));
 							var path = Marshal.PtrToStringUni(Everything_GetResultPath(i));
+							
+							if (string.IsNullOrEmpty(fileName) || string.IsNullOrEmpty(path))
+								continue;
+
 							var fullPath = Path.Combine(path, fileName);
 
 							// Skip if it doesn't match our filter criteria
@@ -233,15 +418,39 @@ namespace Files.App.Services.Search
 				}
 				catch (Exception ex)
 				{
-					App.Logger?.LogWarning(ex, "Everything search failed");
+					App.Logger?.LogError(ex, "Everything search failed");
 				}
 				finally
 				{
-					Everything_CleanUp();
+					try
+					{
+						Everything_CleanUp();
+					}
+					catch (Exception ex)
+					{
+						System.Diagnostics.Debug.WriteLine($"Error cleaning up Everything: {ex.Message}");
+					}
 				}
 
 				return results;
 			}, cancellationToken);
+		}
+
+		private string BuildOptimizedQuery(string query, string searchPath)
+		{
+			if (string.IsNullOrEmpty(searchPath) || searchPath == "Home")
+			{
+				return query;
+			}
+			else if (searchPath.Length <= 3) // Root drive like C:\
+			{
+				return $"path:\"{searchPath}\" {query}";
+			}
+			else
+			{
+				var escapedPath = searchPath.Replace("\"", "\"\"");
+				return $"path:\"{escapedPath}\" {query}";
+			}
 		}
 
 		public async Task<List<ListedItem>> FilterItemsAsync(IEnumerable<ListedItem> items, string query, CancellationToken cancellationToken = default)

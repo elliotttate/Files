@@ -247,7 +247,7 @@ namespace Files.App.Helpers
 					.AddSingleton<IStorageSecurityService, StorageSecurityService>()
 					.AddSingleton<IWindowsCompatibilityService, WindowsCompatibilityService>()
 					.AddSingleton<Services.FuzzyMatcher.IFuzzySearchService, Services.FuzzyMatcher.FuzzySearchService>()
-					.AddSingleton<Services.Search.IEverythingSearchService, Services.Search.EverythingSearchService>()
+					.AddSingleton<Services.Search.IEverythingSearchService, Services.Search.SafeEverythingSearchService>()
 					// ViewModels
 					.AddSingleton<MainPageViewModel>()
 					.AddSingleton<InfoPaneViewModel>()

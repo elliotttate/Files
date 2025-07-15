@@ -6,6 +6,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -27,6 +28,9 @@ namespace Files.App.Services.SizeProvider
 		private static extern void Everything_SetRequestFlags(uint dwRequestFlags);
 		
 		[DllImport("Everything64.dll")]
+		private static extern void Everything_SetMax(uint dwMax);
+		
+		[DllImport("Everything64.dll")]
 		private static extern bool Everything_QueryW(bool bWait);
 		
 		[DllImport("Everything64.dll")]
@@ -43,9 +47,9 @@ namespace Files.App.Services.SizeProvider
 
 		private const int EVERYTHING_REQUEST_SIZE = 0x00000010;
 
-		public EverythingSizeProvider()
+		public EverythingSizeProvider(IEverythingSearchService everythingSearchService)
 		{
-			everythingService = Ioc.Default.GetService<IEverythingSearchService>() ?? new EverythingSearchService();
+			everythingService = everythingSearchService;
 		}
 
 		public Task CleanAsync() => Task.CompletedTask;
@@ -70,6 +74,12 @@ namespace Files.App.Services.SizeProvider
 				RaiseSizeChanged(path, 0, SizeChangedValueState.None);
 			}
 
+			// TEMPORARY: Disable Everything size calculation to prevent crashes
+			// TODO: Re-enable once Everything memory issues are resolved
+			System.Diagnostics.Debug.WriteLine($"Everything size calculation disabled for: {path}");
+			await FallbackCalculateAsync(path, cancellationToken);
+			return;
+
 			// Check if Everything is available
 			if (!everythingService.IsEverythingAvailable())
 			{
@@ -87,8 +97,9 @@ namespace Files.App.Services.SizeProvider
 				sizes[path] = totalSize;
 				RaiseSizeChanged(path, totalSize, SizeChangedValueState.Final);
 			}
-			catch (Exception)
+			catch (Exception ex)
 			{
+				System.Diagnostics.Debug.WriteLine($"Everything size calculation failed: {ex.Message}");
 				// Fall back to standard calculation on error
 				await FallbackCalculateAsync(path, cancellationToken);
 			}
@@ -98,20 +109,61 @@ namespace Files.App.Services.SizeProvider
 		{
 			return await Task.Run(() =>
 			{
-				Everything_Reset();
-				
 				try
 				{
+					Everything_Reset();
+					
+					// IMPORTANT: For large directories like C:\, this query can return millions of results
+					// causing Everything to run out of memory. For root drives, fall back to standard calculation.
+					if (path.Length <= 3 && path.EndsWith(":\\"))
+					{
+						System.Diagnostics.Debug.WriteLine($"Skipping Everything size calculation for root drive: {path}");
+						return 0UL; // Will trigger fallback calculation
+					}
+					
+					// For large known directories, also skip Everything
+					var knownLargePaths = new[] { 
+						@"C:\Windows", 
+						@"C:\Program Files", 
+						@"C:\Program Files (x86)",
+						@"C:\Users",
+						@"C:\ProgramData",
+						@"C:\$Recycle.Bin",
+						Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+						Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+						Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+						Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData)
+					};
+					
+					if (knownLargePaths.Any(largePath => 
+						string.Equals(path, largePath, StringComparison.OrdinalIgnoreCase) ||
+						string.Equals(Path.GetFullPath(path), Path.GetFullPath(largePath), StringComparison.OrdinalIgnoreCase)))
+					{
+						System.Diagnostics.Debug.WriteLine($"Skipping Everything size calculation for large directory: {path}");
+						return 0UL; // Will trigger fallback calculation
+					}
+					
 					// Search for all files under this path
 					// Use folder: to search within specific folder
 					var searchQuery = $"folder:\"{path}\"";
 					Everything_SetSearchW(searchQuery);
 					Everything_SetRequestFlags(EVERYTHING_REQUEST_SIZE);
 					
+					// Add a maximum limit to prevent memory issues
+					Everything_SetMax(1000); // Limit to 1,000 results - much safer limit
+					
 					if (!Everything_QueryW(true))
 						return 0UL;
 
 					var numResults = Everything_GetNumResults();
+					
+					// If we hit the limit, fall back to standard calculation
+					if (numResults >= 1000)
+					{
+						System.Diagnostics.Debug.WriteLine($"Too many results ({numResults}) for Everything size calculation: {path}");
+						return 0UL; // Will trigger fallback calculation
+					}
+					
 					ulong totalSize = 0;
 
 					for (uint i = 0; i < numResults; i++)
@@ -127,9 +179,21 @@ namespace Files.App.Services.SizeProvider
 
 					return totalSize;
 				}
+				catch (Exception ex)
+				{
+					System.Diagnostics.Debug.WriteLine($"Everything size calculation error: {ex.Message}");
+					return 0UL;
+				}
 				finally
 				{
-					Everything_CleanUp();
+					try
+					{
+						Everything_CleanUp();
+					}
+					catch (Exception ex)
+					{
+						System.Diagnostics.Debug.WriteLine($"Error cleaning up Everything: {ex.Message}");
+					}
 				}
 			}, cancellationToken);
 		}

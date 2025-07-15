@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 using Files.App.Services.SizeProvider;
+using Files.App.Services.Search;
 
 namespace Files.App.Services
 {
@@ -11,6 +12,8 @@ namespace Files.App.Services
 			= Ioc.Default.GetRequiredService<IFoldersSettingsService>();
 		private readonly IGeneralSettingsService generalSettings
 			= Ioc.Default.GetRequiredService<IGeneralSettingsService>();
+		private readonly IEverythingSearchService everythingSearchService
+			= Ioc.Default.GetRequiredService<IEverythingSearchService>();
 
 		private ISizeProvider provider;
 
@@ -52,10 +55,9 @@ namespace Files.App.Services
 			// Use Everything for folder sizes if it's selected and available
 			if (generalSettings.PreferredSearchEngine == Files.App.Data.Enums.SearchEngine.Everything)
 			{
-				var everythingService = Ioc.Default.GetService<Files.App.Services.Search.IEverythingSearchService>();
-				if (everythingService != null && everythingService.IsEverythingAvailable())
+				if (everythingSearchService.IsEverythingAvailable())
 				{
-					return new EverythingSizeProvider();
+					return new EverythingSizeProvider(everythingSearchService);
 				}
 			}
 

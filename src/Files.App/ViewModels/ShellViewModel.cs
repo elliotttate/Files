@@ -2758,6 +2758,7 @@ namespace Files.App.ViewModels
 
 		public async Task SearchAsync(FolderSearch search)
 		{
+			App.Logger?.LogInformation($"=== ShellViewModel.SearchAsync START === Query: {search.Query}");
 			ItemLoadStatusChanged?.Invoke(this, new ItemLoadStatusChangedEventArgs() { Status = ItemLoadStatusChangedEventArgs.ItemLoadStatus.Starting });
 
 			CancelSearch();
@@ -2774,12 +2775,26 @@ namespace Files.App.ViewModels
 			var results = new List<ListedItem>();
 			search.SearchTick += async (s, e) =>
 			{
+				App.Logger?.LogInformation($"SearchTick fired with {results.Count} results so far");
 				filesAndFolders = new ConcurrentCollection<ListedItem>(results);
 				await OrderFilesAndFoldersAsync();
 				await ApplyFilesAndFoldersChangesAsync();
 			};
 
-			await search.SearchAsync(results, searchCTS.Token);
+			try
+			{
+				App.Logger?.LogInformation("Starting search...");
+				await search.SearchAsync(results, searchCTS.Token);
+				App.Logger?.LogInformation($"Search completed with {results.Count} total results");
+			}
+			catch (OperationCanceledException)
+			{
+				App.Logger?.LogWarning("Search was cancelled");
+			}
+			catch (Exception ex)
+			{
+				App.Logger?.LogError(ex, "Search failed with error");
+			}
 
 			filesAndFolders = new ConcurrentCollection<ListedItem>(results);
 
@@ -2792,7 +2807,11 @@ namespace Files.App.ViewModels
 
 		public void CancelSearch()
 		{
-			searchCTS?.Cancel();
+			if (searchCTS != null)
+			{
+				App.Logger?.LogInformation("Cancelling previous search");
+				searchCTS.Cancel();
+			}
 		}
 
 		public void UpdateDateDisplay(bool isFormatChange)
