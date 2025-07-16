@@ -28,9 +28,11 @@ namespace Files.App.Services
 
 		private ILogger? Logger { get; } = Ioc.Default.GetRequiredService<ILogger<App>>();
 
-		private string PackageName { get; } = Package.Current.Id.Name;
+		private string? _packageName;
+		private string PackageName => _packageName ??= Package.Current.Id.Name;
 
-		private Version PackageVersion { get; } = new(
+		private Version? _packageVersion;
+		private Version PackageVersion => _packageVersion ??= new(
 			Package.Current.Id.Version.Major,
 			Package.Current.Id.Version.Minor,
 			Package.Current.Id.Version.Build,

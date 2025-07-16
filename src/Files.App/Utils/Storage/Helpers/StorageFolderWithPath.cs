@@ -17,7 +17,7 @@ namespace Files.App.Utils
 		public FilesystemItemType ItemType => FilesystemItemType.Directory;
 
 		public StorageFolderWithPath(BaseStorageFolder folder)
-			: this(folder, folder.Path) { }
+			: this(folder, folder?.Path) { }
 		public StorageFolderWithPath(BaseStorageFolder folder, string path)
 			=> (Item, Path) = (folder, path);
 	}

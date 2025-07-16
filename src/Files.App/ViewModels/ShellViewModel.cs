@@ -122,13 +122,16 @@ namespace Files.App.ViewModels
 			{
 				if (SetProperty(ref _EnabledGitProperties, value) && value is not GitProperties.None)
 				{
-					filesAndFolders.ToList().ForEach(async item =>
+					_ = Task.Run(async () =>
 					{
-						if (item is IGitItem gitItem &&
-							(!gitItem.StatusPropertiesInitialized && value is GitProperties.All or GitProperties.Status
-							|| !gitItem.CommitPropertiesInitialized && value is GitProperties.All or GitProperties.Commit))
+						foreach (var item in filesAndFolders)
 						{
-							await LoadGitPropertiesAsync(gitItem);
+							if (item is IGitItem gitItem &&
+								(!gitItem.StatusPropertiesInitialized && value is GitProperties.All or GitProperties.Status
+								|| !gitItem.CommitPropertiesInitialized && value is GitProperties.All or GitProperties.Commit))
+							{
+								await LoadGitPropertiesAsync(gitItem).ConfigureAwait(false);
+							}
 						}
 					});
 				}
@@ -195,7 +198,7 @@ namespace Files.App.ViewModels
 			if (isLibrary || !Path.IsPathRooted(value))
 				workingRoot = currentStorageFolder = null;
 			else if (!Path.IsPathRooted(WorkingDirectory) || Path.GetPathRoot(WorkingDirectory) != Path.GetPathRoot(value))
-				workingRoot = await FilesystemTasks.Wrap(() => DriveHelpers.GetRootFromPathAsync(value));
+				workingRoot = await FilesystemTasks.Wrap(() => DriveHelpers.GetRootFromPathAsync(value)).ConfigureAwait(false);
 
 			if (value == "Home" || value == "ReleaseNotes" || value == "Settings")
 				currentStorageFolder = null;
@@ -211,17 +214,17 @@ namespace Files.App.ViewModels
 			}
 
 			GitDirectory = GitHelpers.GetGitRepositoryPath(WorkingDirectory, pathRoot);
-			IsValidGitDirectory = !string.IsNullOrEmpty((await GitHelpers.GetRepositoryHead(GitDirectory))?.Name);
+			IsValidGitDirectory = !string.IsNullOrEmpty((await GitHelpers.GetRepositoryHead(GitDirectory).ConfigureAwait(false))?.Name);
 
 			OnPropertyChanged(nameof(WorkingDirectory));
 		}
 
 		public async Task<FilesystemResult<BaseStorageFolder>> GetFolderFromPathAsync(string value, CancellationToken cancellationToken = default)
 		{
-			await getFileOrFolderSemaphore.WaitAsync(cancellationToken);
+			await getFileOrFolderSemaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
 			try
 			{
-				return await FilesystemTasks.Wrap(() => StorageFileExtensions.DangerousGetFolderFromPathAsync(value, workingRoot, currentStorageFolder));
+				return await FilesystemTasks.Wrap(() => StorageFileExtensions.DangerousGetFolderFromPathAsync(value, workingRoot, currentStorageFolder)).ConfigureAwait(false);
 			}
 			finally
 			{
@@ -231,10 +234,10 @@ namespace Files.App.ViewModels
 
 		public async Task<FilesystemResult<BaseStorageFile>> GetFileFromPathAsync(string value, CancellationToken cancellationToken = default)
 		{
-			await getFileOrFolderSemaphore.WaitAsync(cancellationToken);
+			await getFileOrFolderSemaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
 			try
 			{
-				return await FilesystemTasks.Wrap(() => StorageFileExtensions.DangerousGetFileFromPathAsync(value, workingRoot, currentStorageFolder));
+				return await FilesystemTasks.Wrap(() => StorageFileExtensions.DangerousGetFileFromPathAsync(value, workingRoot, currentStorageFolder)).ConfigureAwait(false);
 			}
 			finally
 			{
@@ -288,8 +291,8 @@ namespace Files.App.ViewModels
 			OnPropertyChanged(nameof(IsSortedBySyncStatus));
 			OnPropertyChanged(nameof(IsSortedByFileTag));
 
-			await OrderFilesAndFoldersAsync();
-			await ApplyFilesAndFoldersChangesAsync();
+			await OrderFilesAndFoldersAsync().ConfigureAwait(false);
+			await ApplyFilesAndFoldersChangesAsync().ConfigureAwait(false);
 		}
 
 		public async Task UpdateSortDirectionStatusAsync()
@@ -297,24 +300,24 @@ namespace Files.App.ViewModels
 			OnPropertyChanged(nameof(IsSortedAscending));
 			OnPropertyChanged(nameof(IsSortedDescending));
 
-			await OrderFilesAndFoldersAsync();
-			await ApplyFilesAndFoldersChangesAsync();
+			await OrderFilesAndFoldersAsync().ConfigureAwait(false);
+			await ApplyFilesAndFoldersChangesAsync().ConfigureAwait(false);
 		}
 
 		public async Task UpdateSortDirectoriesAlongsideFilesAsync()
 		{
 			OnPropertyChanged(nameof(AreDirectoriesSortedAlongsideFiles));
 
-			await OrderFilesAndFoldersAsync();
-			await ApplyFilesAndFoldersChangesAsync();
+			await OrderFilesAndFoldersAsync().ConfigureAwait(false);
+			await ApplyFilesAndFoldersChangesAsync().ConfigureAwait(false);
 		}
 
 		public async Task UpdateSortFilesFirstAsync()
 		{
 			OnPropertyChanged(nameof(AreFilesSortedFirst));
 
-			await OrderFilesAndFoldersAsync();
-			await ApplyFilesAndFoldersChangesAsync();
+			await OrderFilesAndFoldersAsync().ConfigureAwait(false);
+			await ApplyFilesAndFoldersChangesAsync().ConfigureAwait(false);
 		}
 
 		private void UpdateSortAndGroupOptions()
@@ -588,8 +591,8 @@ namespace Files.App.ViewModels
 				return;
 
 			await AddFileOrFolderAsync(newListedItem);
-			await OrderFilesAndFoldersAsync();
-			await ApplyFilesAndFoldersChangesAsync();
+			await OrderFilesAndFoldersAsync().ConfigureAwait(false);
+			await ApplyFilesAndFoldersChangesAsync().ConfigureAwait(false);
 		}
 
 		private async void FolderSizeProvider_SizeChanged(object? sender, Services.SizeProvider.SizeChangedEventArgs e)
@@ -605,7 +608,7 @@ namespace Files.App.ViewModels
 
 			try
 			{
-				var matchingItem = filesAndFolders.ToList().FirstOrDefault(x => x.ItemPath == e.Path);
+				var matchingItem = filesAndFolders.FirstOrDefault(x => x.ItemPath == e.Path);
 				if (matchingItem is not null && (e.ValueState is not SizeChangedValueState.Intermediate || (long)e.NewSize > matchingItem.FileSizeBytes))
 				{
 					await dispatcherQueue.EnqueueOrInvokeAsync(() =>
@@ -740,17 +743,130 @@ namespace Files.App.ViewModels
 				}
 				var filesAndFoldersLocal = filesAndFolders.ToList();
 
-				// CollectionChanged will cause UI update, which may cause significant performance degradation,
-				// so suppress CollectionChanged event here while loading items heavily.
+				// Do filtering BEFORE UI operations to avoid async operations inside dispatcher queue
+				List<ListedItem> itemsToDisplay;
+				if (string.IsNullOrEmpty(FilesAndFoldersFilter))
+				{
+					App.Logger?.LogInformation("No filter applied, using all items");
+					itemsToDisplay = filesAndFoldersLocal;
+				}
+				else
+				{
+					App.Logger?.LogInformation($"ApplyFilesAndFoldersChangesAsync: Filter='{FilesAndFoldersFilter}', LocalItems={filesAndFoldersLocal.Count}");
+					
+					// Use the preferred search engine
+					var searchEngine = UserSettingsService.GeneralSettingsService.PreferredSearchEngine;
+					itemsToDisplay = new List<ListedItem>();
+					
+					switch (searchEngine)
+					{
+						case Data.Enums.SearchEngine.Everything:
+							{
+								var everythingService = Ioc.Default.GetService<Services.Search.IEverythingSearchService>();
+								if (everythingService != null && everythingService.IsEverythingAvailable())
+								{
+									try
+									{
+										App.Logger?.LogInformation($"Starting Everything filter: '{FilesAndFoldersFilter}' on {filesAndFoldersLocal.Count} items");
+										
+										// Call FilterItemsAsync directly with timeout
+										var filterTask = everythingService.FilterItemsAsync(filesAndFoldersLocal, FilesAndFoldersFilter, addFilesCTS.Token);
+										var timeoutTask = Task.Delay(5000, addFilesCTS.Token);
+										
+										if (await Task.WhenAny(filterTask, timeoutTask) == filterTask)
+										{
+											var filteredItems = await filterTask;
+											App.Logger?.LogInformation($"Everything filter returned {filteredItems.Count} items");
+											if (!addFilesCTS.IsCancellationRequested)
+											{
+												itemsToDisplay = filteredItems;
+											}
+										}
+										else
+										{
+											// Timeout - fall back to fuzzy search
+											App.Logger?.LogWarning("Everything search timed out, falling back to fuzzy search");
+											goto case Data.Enums.SearchEngine.BuiltInFuzzy;
+										}
+									}
+									catch (Exception ex)
+									{
+										// On error, fall back to fuzzy search
+										App.Logger?.LogWarning(ex, "Everything search failed, falling back to fuzzy search");
+										goto case Data.Enums.SearchEngine.BuiltInFuzzy;
+									}
+								}
+								else
+								{
+									// Everything not available, fall back to fuzzy search
+									goto case Data.Enums.SearchEngine.BuiltInFuzzy;
+								}
+								break;
+							}
+						
+						case Data.Enums.SearchEngine.BuiltInFuzzy:
+							{
+								var fuzzySearchService = Ioc.Default.GetService<Services.FuzzyMatcher.IFuzzySearchService>();
+								if (fuzzySearchService != null)
+								{
+									try
+									{
+										// Use async version with cancellation support  
+										var filterTask = fuzzySearchService.FilterItemsAsync(filesAndFoldersLocal, FilesAndFoldersFilter, addFilesCTS.Token);
+										var timeoutTask = Task.Delay(5000, addFilesCTS.Token);
+										
+										// Wait for filtering with timeout to prevent hanging
+										if (await Task.WhenAny(filterTask, timeoutTask) == filterTask)
+										{
+											var filteredItems = await filterTask;
+											if (!addFilesCTS.IsCancellationRequested)
+											{
+												itemsToDisplay = filteredItems;
+											}
+										}
+										else
+										{
+											// Timeout - fall back to simple contains
+											App.Logger?.LogWarning("Fuzzy search timed out, falling back to simple contains");
+											goto case Data.Enums.SearchEngine.SimpleContains;
+										}
+									}
+									catch (Exception ex)
+									{
+										// On any error, fall back to simple contains
+										App.Logger?.LogWarning(ex, "Fuzzy search failed, falling back to simple contains");
+										goto case Data.Enums.SearchEngine.SimpleContains;
+									}
+								}
+								else
+								{
+									// Fuzzy search not available, fall back to simple contains
+									goto case Data.Enums.SearchEngine.SimpleContains;
+								}
+								break;
+							}
+						
+						case Data.Enums.SearchEngine.SimpleContains:
+						default:
+							{
+								// Simple contains search
+								App.Logger?.LogInformation($"Using simple contains filter: '{FilesAndFoldersFilter}' on {filesAndFoldersLocal.Count} items");
+								itemsToDisplay = filesAndFoldersLocal
+									.Where(x => x.Name.Contains(FilesAndFoldersFilter, StringComparison.OrdinalIgnoreCase))
+									.Take(500)
+									.ToList();
+								App.Logger?.LogInformation($"Simple contains filter returned {itemsToDisplay.Count} items");
+								break;
+							}
+					}
+				}
 
-				// Note that both DataGrid and GridView don't support multi-items changes notification, so here
-				// we have to call BeginBulkOperation to suppress CollectionChanged and call EndBulkOperation
-				// in the end to fire a CollectionChanged event with NotifyCollectionChangedAction.Reset
+				// Now do UI updates synchronously
 				await bulkOperationSemaphore.WaitAsync(addFilesCTS.Token);
 				var isSemaphoreReleased = false;
 				try
 				{
-					await dispatcherQueue.EnqueueOrInvokeAsync(async () =>
+					await dispatcherQueue.EnqueueOrInvokeAsync(() =>
 					{
 						try
 						{
@@ -760,115 +876,8 @@ namespace Files.App.ViewModels
 								return;
 
 							FilesAndFolders.Clear();
-							if (string.IsNullOrEmpty(FilesAndFoldersFilter))
-							{
-								FilesAndFolders.AddRange(filesAndFoldersLocal);
-							}
-							else
-							{
-								// Use the preferred search engine
-								var searchEngine = UserSettingsService.GeneralSettingsService.PreferredSearchEngine;
-								
-								switch (searchEngine)
-								{
-									case Data.Enums.SearchEngine.Everything:
-										{
-											var everythingService = Ioc.Default.GetService<Services.Search.IEverythingSearchService>();
-											if (everythingService != null && everythingService.IsEverythingAvailable())
-											{
-												try
-												{
-													var filterTask = Task.Run(async () => 
-														await everythingService.FilterItemsAsync(filesAndFoldersLocal, FilesAndFoldersFilter, addFilesCTS.Token),
-														addFilesCTS.Token);
-													
-													// Wait for filtering with timeout
-													if (await Task.WhenAny(filterTask, Task.Delay(5000, addFilesCTS.Token)) == filterTask)
-													{
-														var filteredItems = await filterTask;
-														if (!addFilesCTS.IsCancellationRequested)
-														{
-															FilesAndFolders.AddRange(filteredItems);
-														}
-													}
-													else
-													{
-														// Timeout - fall back to fuzzy search
-														App.Logger.LogWarning("Everything search timed out, falling back to fuzzy search");
-														goto case Data.Enums.SearchEngine.BuiltInFuzzy;
-													}
-												}
-												catch (Exception ex)
-												{
-													// On error, fall back to fuzzy search
-													App.Logger.LogWarning(ex, "Everything search failed, falling back to fuzzy search");
-													goto case Data.Enums.SearchEngine.BuiltInFuzzy;
-												}
-											}
-											else
-											{
-												// Everything not available, fall back to fuzzy search
-												goto case Data.Enums.SearchEngine.BuiltInFuzzy;
-											}
-											break;
-										}
-									
-									case Data.Enums.SearchEngine.BuiltInFuzzy:
-										{
-											var fuzzySearchService = Ioc.Default.GetService<Services.FuzzyMatcher.IFuzzySearchService>();
-											if (fuzzySearchService != null)
-											{
-												try
-												{
-													// Use async version with cancellation support
-													var filterTask = Task.Run(async () => 
-														await fuzzySearchService.FilterItemsAsync(filesAndFoldersLocal, FilesAndFoldersFilter, addFilesCTS.Token),
-														addFilesCTS.Token);
-													
-													// Wait for filtering with timeout to prevent hanging
-													if (await Task.WhenAny(filterTask, Task.Delay(5000, addFilesCTS.Token)) == filterTask)
-													{
-														var filteredItems = await filterTask;
-														if (!addFilesCTS.IsCancellationRequested)
-														{
-															FilesAndFolders.AddRange(filteredItems);
-														}
-													}
-													else
-													{
-														// Timeout - fall back to simple contains
-														App.Logger.LogWarning("Fuzzy search timed out, falling back to simple contains");
-														goto case Data.Enums.SearchEngine.SimpleContains;
-													}
-												}
-												catch (Exception ex)
-												{
-													// On any error, fall back to simple contains
-													App.Logger.LogWarning(ex, "Fuzzy search failed, falling back to simple contains");
-													goto case Data.Enums.SearchEngine.SimpleContains;
-												}
-											}
-											else
-											{
-												// Fuzzy search not available, fall back to simple contains
-												goto case Data.Enums.SearchEngine.SimpleContains;
-											}
-											break;
-										}
-									
-									case Data.Enums.SearchEngine.SimpleContains:
-									default:
-										{
-											// Simple contains search
-											var filtered = filesAndFoldersLocal
-												.Where(x => x.Name.Contains(FilesAndFoldersFilter, StringComparison.OrdinalIgnoreCase))
-												.Take(500)
-												.ToList();
-											FilesAndFolders.AddRange(filtered);
-											break;
-										}
-								}
-							}
+							FilesAndFolders.AddRange(itemsToDisplay);
+							App.Logger?.LogInformation($"Added {itemsToDisplay.Count} items to FilesAndFolders display");
 
 							if (folderSettings.DirectoryGroupOption != GroupOption.None)
 								OrderGroups();
@@ -923,7 +932,7 @@ namespace Files.App.ViewModels
 				// Performance: Only sort if we have items and sorting is needed
 				if (filesAndFolders.Count > 1)
 				{
-					filesAndFolders = new ConcurrentCollection<ListedItem>(SortingHelper.OrderFileList(filesAndFolders.ToList(), folderSettings.DirectorySortOption, folderSettings.DirectorySortDirection,
+					filesAndFolders = new ConcurrentCollection<ListedItem>(SortingHelper.OrderFileList(filesAndFolders, folderSettings.DirectorySortOption, folderSettings.DirectorySortDirection,
 						folderSettings.SortDirectoriesAlongsideFiles, folderSettings.SortFilesFirst));
 				}
 			}
@@ -1050,13 +1059,13 @@ namespace Files.App.ViewModels
 
 			return Task.Run(async () =>
 			{
-				foreach (var gp in FilesAndFolders.GroupedCollection.ToList())
+				foreach (var gp in FilesAndFolders.GroupedCollection)
 				{
-					var img = await GetItemTypeGroupIcon(gp.FirstOrDefault());
+					var img = await GetItemTypeGroupIcon(gp.FirstOrDefault()).ConfigureAwait(false);
 					await dispatcherQueue.EnqueueOrInvokeAsync(() =>
 					{
 						gp.Model.ImageSource = img;
-					}, Microsoft.UI.Dispatching.DispatcherQueuePriority.Low);
+					}, Microsoft.UI.Dispatching.DispatcherQueuePriority.Low).ConfigureAwait(false);
 				}
 			});
 		}
@@ -1085,6 +1094,14 @@ namespace Files.App.ViewModels
 
 		private async Task LoadThumbnailAsync(ListedItem item, CancellationToken cancellationToken)
 		{
+			// Use new caching service if available
+			if (item != null && !string.IsNullOrEmpty(item.ItemPath))
+			{
+				await item.LoadThumbnailAsync((uint)LayoutSizeKindHelper.GetIconSize(folderSettings.LayoutMode), cancellationToken);
+				return;
+			}
+
+			// Fallback to old implementation if needed
 			var loadNonCachedThumbnail = false;
 			var thumbnailSize = LayoutSizeKindHelper.GetIconSize(folderSettings.LayoutMode);
 			var returnIconOnly = UserSettingsService.FoldersSettingsService.ShowThumbnails == false || thumbnailSize < 48;
@@ -1233,7 +1250,7 @@ namespace Files.App.ViewModels
 					BaseStorageFile? matchingStorageFile = null;
 					if (item.Key is not null && FilesAndFolders.IsGrouped && FilesAndFolders.GetExtendedGroupHeaderInfo is not null)
 					{
-						gp = FilesAndFolders.GroupedCollection?.ToList().FirstOrDefault(x => x.Model.Key == item.Key);
+						gp = FilesAndFolders.GroupedCollection?.FirstOrDefault(x => x.Model.Key == item.Key);
 						loadGroupHeaderInfo = gp is not null && !gp.Model.Initialized && gp.GetExtendedGroupHeaderInfo is not null;
 					}
 
@@ -1495,35 +1512,45 @@ namespace Files.App.ViewModels
 						if (getCommit)
 							gitItem.CommitPropertiesInitialized = true;
 
-						await SafetyExtensions.IgnoreExceptions(() =>
+						await SafetyExtensions.IgnoreExceptions(async () =>
 						{
-							return dispatcherQueue.EnqueueOrInvokeAsync(() =>
+							await dispatcherQueue.EnqueueOrInvokeAsync(() =>
 							{
-								var repo = new Repository(repoPath);
-								GitItemModel gitItemModel = GitHelpers.GetGitInformationForItem(repo, gitItem.ItemPath, getStatus, getCommit);
-
-								if (getStatus)
+								try
 								{
-									gitItem.UnmergedGitStatusIcon = gitItemModel.Status switch
+									using var repo = new Repository(repoPath);
+									GitItemModel gitItemModel = GitHelpers.GetGitInformationForItem(repo, gitItem.ItemPath, getStatus, getCommit);
+
+									if (getStatus)
 									{
-										ChangeKind.Added => (Microsoft.UI.Xaml.Style)Microsoft.UI.Xaml.Application.Current.Resources["App.ThemedIcons.Status.Added"],
-										ChangeKind.Deleted => (Microsoft.UI.Xaml.Style)Microsoft.UI.Xaml.Application.Current.Resources["App.ThemedIcons.Status.Removed"],
-										ChangeKind.Modified => (Microsoft.UI.Xaml.Style)Microsoft.UI.Xaml.Application.Current.Resources["App.ThemedIcons.Status.Modified"],
-										ChangeKind.Untracked => (Microsoft.UI.Xaml.Style)Microsoft.UI.Xaml.Application.Current.Resources["App.ThemedIcons.Status.Removed"],
-										_ => null,
-									};
-									gitItem.UnmergedGitStatusName = gitItemModel.StatusHumanized;
+										gitItem.UnmergedGitStatusIcon = gitItemModel.Status switch
+										{
+											ChangeKind.Added => (Microsoft.UI.Xaml.Style)Microsoft.UI.Xaml.Application.Current.Resources["App.ThemedIcons.Status.Added"],
+											ChangeKind.Deleted => (Microsoft.UI.Xaml.Style)Microsoft.UI.Xaml.Application.Current.Resources["App.ThemedIcons.Status.Removed"],
+											ChangeKind.Modified => (Microsoft.UI.Xaml.Style)Microsoft.UI.Xaml.Application.Current.Resources["App.ThemedIcons.Status.Modified"],
+											ChangeKind.Untracked => (Microsoft.UI.Xaml.Style)Microsoft.UI.Xaml.Application.Current.Resources["App.ThemedIcons.Status.Removed"],
+											_ => null,
+										};
+										gitItem.UnmergedGitStatusName = gitItemModel.StatusHumanized;
+									}
+									if (getCommit)
+									{
+										gitItem.GitLastCommitDate = gitItemModel.LastCommit?.Author.When;
+										gitItem.GitLastCommitMessage = gitItemModel.LastCommit?.MessageShort;
+										gitItem.GitLastCommitAuthor = gitItemModel.LastCommit?.Author.Name;
+										gitItem.GitLastCommitSha = gitItemModel.LastCommit?.Sha.Substring(0, 7);
+										gitItem.GitLastCommitFullSha = gitItemModel.LastCommit?.Sha;
+									}
 								}
-								if (getCommit)
+								catch (LibGit2Sharp.RepositoryNotFoundException)
 								{
-									gitItem.GitLastCommitDate = gitItemModel.LastCommit?.Author.When;
-									gitItem.GitLastCommitMessage = gitItemModel.LastCommit?.MessageShort;
-									gitItem.GitLastCommitAuthor = gitItemModel.LastCommit?.Author.Name;
-									gitItem.GitLastCommitSha = gitItemModel.LastCommit?.Sha.Substring(0, 7);
-									gitItem.GitLastCommitFullSha = gitItemModel.LastCommit?.Sha;
+									// Repository is no longer valid or accessible
+									// This can happen due to permission issues or concurrent modifications
 								}
-
-								repo.Dispose();
+								catch (Exception ex) when (ex is LibGit2SharpException or UnauthorizedAccessException)
+								{
+									// Handle other LibGit2Sharp exceptions and access issues
+								}
 							},
 							Microsoft.UI.Dispatching.DispatcherQueuePriority.Low);
 						});
@@ -1642,7 +1669,7 @@ namespace Files.App.ViewModels
 				ItemLoadStatusChanged?.Invoke(this, new ItemLoadStatusChangedEventArgs() { Status = ItemLoadStatusChangedEventArgs.ItemLoadStatus.Complete, PreviousDirectory = previousDir, Path = path });
 				IsLoadingItems = false;
 
-				AdaptiveLayoutHelpers.ApplyAdaptativeLayout(folderSettings, filesAndFolders.ToList());
+				AdaptiveLayoutHelpers.ApplyAdaptativeLayout(folderSettings, filesAndFolders);
 			}
 			finally
 			{
@@ -1935,8 +1962,13 @@ namespace Files.App.ViewModels
 						List<ListedItem> fileList = await Win32StorageEnumerator.ListEntries(path, hFile, findData, cancellationToken, -1, intermediateAction: async (intermediateList) =>
 						{
 							filesAndFolders.AddRange(intermediateList);
-							// Only update UI for larger batches to improve performance
-							if (intermediateList.Count >= 50)
+							// Adaptive UI updates based on batch size
+							// For large directories, update less frequently to improve performance
+							bool shouldUpdate = filesAndFolders.Count < 5000 ? 
+								intermediateList.Count >= 50 : // Normal directories - update every 50 items
+								intermediateList.Count >= 500; // Large directories - update every 500 items
+							
+							if (shouldUpdate)
 							{
 								await ApplyFilesAndFoldersChangesAsync();
 							}
@@ -2010,7 +2042,7 @@ namespace Files.App.ViewModels
 
 		private void CheckForSolutionFile()
 		{
-			SolutionFilePath = filesAndFolders.ToList().AsParallel()
+			SolutionFilePath = filesAndFolders.AsParallel()
 				.Where(item => FileExtensionHelpers.HasExtension(item.FileExtension, ".sln", ".slnx"))
 				.FirstOrDefault()?.ItemPath;
 		}
@@ -2572,7 +2604,7 @@ namespace Files.App.ViewModels
 				return;
 			}
 
-			if (!filesAndFolders.ToList().Any(x => x.ItemPath.Equals(item.ItemPath, StringComparison.OrdinalIgnoreCase))) // Avoid adding duplicate items
+			if (!filesAndFolders.Any(x => x.ItemPath.Equals(item.ItemPath, StringComparison.OrdinalIgnoreCase))) // Avoid adding duplicate items
 			{
 				filesAndFolders.Add(item);
 
@@ -2634,9 +2666,9 @@ namespace Files.App.ViewModels
 		{
 			IStorageItem? storageItem = null;
 			if (item.PrimaryItemAttribute == StorageItemTypes.File)
-				storageItem = (await GetFileFromPathAsync(item.ItemPath)).Result;
+				storageItem = (await GetFileFromPathAsync(item.ItemPath).ConfigureAwait(false)).Result;
 			else if (item.PrimaryItemAttribute == StorageItemTypes.Folder)
-				storageItem = (await GetFolderFromPathAsync(item.ItemPath)).Result;
+				storageItem = (await GetFolderFromPathAsync(item.ItemPath).ConfigureAwait(false)).Result;
 
 			if (storageItem is not null)
 			{
@@ -2678,7 +2710,7 @@ namespace Files.App.ViewModels
 
 			try
 			{
-				var matchingItems = filesAndFolders.ToList().Where(x => paths.Any(p => p.Equals(x.ItemPath, StringComparison.OrdinalIgnoreCase)));
+				var matchingItems = filesAndFolders.Where(x => paths.Any(p => p.Equals(x.ItemPath, StringComparison.OrdinalIgnoreCase)));
 				var results = await Task.WhenAll(matchingItems.Select(x => GetFileOrFolderUpdateInfoAsync(x, hasSyncStatus)));
 
 				await dispatcherQueue.EnqueueOrInvokeAsync(() =>
@@ -2723,7 +2755,7 @@ namespace Files.App.ViewModels
 
 			try
 			{
-				var matchingItem = filesAndFolders.ToList().FirstOrDefault(x => x.ItemPath.Equals(path, StringComparison.OrdinalIgnoreCase));
+				var matchingItem = filesAndFolders.FirstOrDefault(x => x.ItemPath.Equals(path, StringComparison.OrdinalIgnoreCase));
 
 				if (matchingItem is not null)
 				{
@@ -2732,7 +2764,7 @@ namespace Files.App.ViewModels
 					if (UserSettingsService.FoldersSettingsService.AreAlternateStreamsVisible)
 					{
 						// Main file is removed, remove connected ADS
-						foreach (var adsItem in filesAndFolders.ToList().Where(x => x is AlternateStreamItem ads && ads.MainStreamPath == matchingItem.ItemPath))
+						foreach (var adsItem in filesAndFolders.Where(x => x is AlternateStreamItem ads && ads.MainStreamPath == matchingItem.ItemPath).ToList())
 							filesAndFolders.Remove(adsItem);
 					}
 
@@ -2752,8 +2784,8 @@ namespace Files.App.ViewModels
 			filesAndFolders.Clear();
 			filesAndFolders.AddRange(searchItems);
 
-			await OrderFilesAndFoldersAsync();
-			await ApplyFilesAndFoldersChangesAsync();
+			await OrderFilesAndFoldersAsync().ConfigureAwait(false);
+			await ApplyFilesAndFoldersChangesAsync().ConfigureAwait(false);
 		}
 
 		public async Task SearchAsync(FolderSearch search)
@@ -2798,8 +2830,8 @@ namespace Files.App.ViewModels
 
 			filesAndFolders = new ConcurrentCollection<ListedItem>(results);
 
-			await OrderFilesAndFoldersAsync();
-			await ApplyFilesAndFoldersChangesAsync();
+			await OrderFilesAndFoldersAsync().ConfigureAwait(false);
+			await ApplyFilesAndFoldersChangesAsync().ConfigureAwait(false);
 
 			ItemLoadStatusChanged?.Invoke(this, new ItemLoadStatusChangedEventArgs() { Status = ItemLoadStatusChangedEventArgs.ItemLoadStatus.Complete });
 			IsLoadingItems = false;
@@ -2816,19 +2848,22 @@ namespace Files.App.ViewModels
 
 		public void UpdateDateDisplay(bool isFormatChange)
 		{
-			filesAndFolders.ToList().AsParallel().ForAll(async item =>
+			_ = Task.Run(async () =>
 			{
-				// Reassign values to update date display
-				if (isFormatChange || IsDateDiff(item.ItemDateAccessedReal))
-					await dispatcherQueue.EnqueueOrInvokeAsync(() => item.ItemDateAccessedReal = item.ItemDateAccessedReal);
-				if (isFormatChange || IsDateDiff(item.ItemDateCreatedReal))
-					await dispatcherQueue.EnqueueOrInvokeAsync(() => item.ItemDateCreatedReal = item.ItemDateCreatedReal);
-				if (isFormatChange || IsDateDiff(item.ItemDateModifiedReal))
-					await dispatcherQueue.EnqueueOrInvokeAsync(() => item.ItemDateModifiedReal = item.ItemDateModifiedReal);
-				if (item is RecycleBinItem recycleBinItem && (isFormatChange || IsDateDiff(recycleBinItem.ItemDateDeletedReal)))
-					await dispatcherQueue.EnqueueOrInvokeAsync(() => recycleBinItem.ItemDateDeletedReal = recycleBinItem.ItemDateDeletedReal);
-				if (item is IGitItem gitItem && gitItem.GitLastCommitDate is DateTimeOffset offset && (isFormatChange || IsDateDiff(offset)))
-					await dispatcherQueue.EnqueueOrInvokeAsync(() => gitItem.GitLastCommitDate = gitItem.GitLastCommitDate);
+				await Task.WhenAll(filesAndFolders.Select(async item =>
+				{
+					// Reassign values to update date display
+					if (isFormatChange || IsDateDiff(item.ItemDateAccessedReal))
+						await dispatcherQueue.EnqueueOrInvokeAsync(() => item.ItemDateAccessedReal = item.ItemDateAccessedReal).ConfigureAwait(false);
+					if (isFormatChange || IsDateDiff(item.ItemDateCreatedReal))
+						await dispatcherQueue.EnqueueOrInvokeAsync(() => item.ItemDateCreatedReal = item.ItemDateCreatedReal).ConfigureAwait(false);
+					if (isFormatChange || IsDateDiff(item.ItemDateModifiedReal))
+						await dispatcherQueue.EnqueueOrInvokeAsync(() => item.ItemDateModifiedReal = item.ItemDateModifiedReal).ConfigureAwait(false);
+					if (item is RecycleBinItem recycleBinItem && (isFormatChange || IsDateDiff(recycleBinItem.ItemDateDeletedReal)))
+						await dispatcherQueue.EnqueueOrInvokeAsync(() => recycleBinItem.ItemDateDeletedReal = recycleBinItem.ItemDateDeletedReal).ConfigureAwait(false);
+					if (item is IGitItem gitItem && gitItem.GitLastCommitDate is DateTimeOffset offset && (isFormatChange || IsDateDiff(offset)))
+						await dispatcherQueue.EnqueueOrInvokeAsync(() => gitItem.GitLastCommitDate = gitItem.GitLastCommitDate).ConfigureAwait(false);
+				})).ConfigureAwait(false);
 			});
 		}
 

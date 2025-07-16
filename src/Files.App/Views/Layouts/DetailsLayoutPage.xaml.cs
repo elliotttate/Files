@@ -100,23 +100,32 @@ namespace Files.App.Views.Layouts
 
 		protected override void ItemManipulationModel_ScrollIntoViewInvoked(object? sender, ListedItem e)
 		{
-			FileList.ScrollIntoView(e);
-			ContentScroller?.ChangeView(null, FileList.Items.IndexOf(e) * RowHeight, null, true); // Scroll to index * item height
+			DispatcherQueue.TryEnqueue(() =>
+			{
+				FileList.ScrollIntoView(e);
+				ContentScroller?.ChangeView(null, FileList.Items.IndexOf(e) * RowHeight, null, true); // Scroll to index * item height
+			});
 		}
 
 		protected override void ItemManipulationModel_ScrollToTopInvoked(object? sender, EventArgs e)
 		{
-			ContentScroller?.ChangeView(null, 0, null, true);
+			DispatcherQueue.TryEnqueue(() =>
+			{
+				ContentScroller?.ChangeView(null, 0, null, true);
+			});
 		}
 
 		protected override void ItemManipulationModel_FocusSelectedItemsInvoked(object? sender, EventArgs e)
 		{
-			if (SelectedItems?.Any() ?? false)
+			DispatcherQueue.TryEnqueue(() =>
 			{
-				FileList.ScrollIntoView(SelectedItems.Last());
-				ContentScroller?.ChangeView(null, FileList.Items.IndexOf(SelectedItems.Last()) * RowHeight, null, false);
-				(FileList.ContainerFromItem(SelectedItems.Last()) as ListViewItem)?.Focus(FocusState.Keyboard);
-			}
+				if (SelectedItems?.Any() ?? false)
+				{
+					FileList.ScrollIntoView(SelectedItems.Last());
+					ContentScroller?.ChangeView(null, FileList.Items.IndexOf(SelectedItems.Last()) * RowHeight, null, false);
+					(FileList.ContainerFromItem(SelectedItems.Last()) as ListViewItem)?.Focus(FocusState.Keyboard);
+				}
+			});
 		}
 
 		protected override void ItemManipulationModel_AddSelectedItemInvoked(object? sender, ListedItem e)

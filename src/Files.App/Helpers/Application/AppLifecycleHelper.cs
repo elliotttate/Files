@@ -2,7 +2,10 @@
 // Licensed under the MIT License.
 
 using Files.App.Helpers.Application;
+using Files.App.Services.Caching;
+using Files.App.Services.Monitoring;
 using Files.App.Services.SizeProvider;
+using Files.App.Services.Thumbnails;
 using Files.App.Utils.Logger;
 using Files.App.ViewModels.Settings;
 using Microsoft.Extensions.DependencyInjection;
@@ -25,7 +28,8 @@ namespace Files.App.Helpers
 	/// </summary>
 	public static class AppLifecycleHelper
 	{
-		private readonly static string AppInformationKey = @$"Software\Files Community\{Package.Current.Id.Name}\v1\AppInformation";
+		private static string? _appInformationKey;
+		private static string AppInformationKey => _appInformationKey ??= @$"Software\Files Community\{Package.Current.Id.Name}\v1\AppInformation";
 
 		/// <summary>
 		/// Gets the value that indicates whether the app is updated.
@@ -79,13 +83,15 @@ namespace Files.App.Helpers
 		/// <summary>
 		/// Gets application package version.
 		/// </summary>
-		public static Version AppVersion { get; } =
+		private static Version? _appVersion;
+		public static Version AppVersion => _appVersion ??= 
 			new(Package.Current.Id.Version.Major, Package.Current.Id.Version.Minor, Package.Current.Id.Version.Build, Package.Current.Id.Version.Revision);
 
 		/// <summary>
 		/// Gets application icon path.
 		/// </summary>
-		public static string AppIconPath { get; } =
+		private static string? _appIconPath;
+		public static string AppIconPath => _appIconPath ??= 
 			SystemIO.Path.Combine(Package.Current.InstalledLocation.Path, AppEnvironment switch
 			{
 				AppEnvironment.Dev => Constants.AssetPaths.DevLogo,
@@ -243,6 +249,9 @@ namespace Files.App.Helpers
 					.AddSingleton<INetworkService, NetworkService>()
 					.AddSingleton<IStartMenuService, StartMenuService>()
 					.AddSingleton<IStorageCacheService, StorageCacheService>()
+					.AddSingleton<IFileModelCacheService, FileModelCacheService>()
+					.AddSingleton<IThumbnailLoadingQueue, ThumbnailLoadingQueue>()
+					.AddSingleton<IThumbnailPerformanceMonitor, ThumbnailPerformanceMonitor>()
 					.AddSingleton<IStorageArchiveService, StorageArchiveService>()
 					.AddSingleton<IStorageSecurityService, StorageSecurityService>()
 					.AddSingleton<IWindowsCompatibilityService, WindowsCompatibilityService>()
@@ -263,6 +272,7 @@ namespace Files.App.Helpers
 					.AddSingleton<FileTagsWidgetViewModel>()
 					.AddSingleton<RecentFilesWidgetViewModel>()
 					.AddSingleton<ReleaseNotesViewModel>()
+					.AddTransient<ViewModels.Debugging.ThumbnailPerformanceDashboardViewModel>()
 					// Utilities
 					.AddSingleton<QuickAccessManager>()
 					.AddSingleton<StorageHistoryWrapper>()

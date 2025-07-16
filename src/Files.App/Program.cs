@@ -10,6 +10,7 @@ using System.Text;
 using Windows.ApplicationModel.Activation;
 using Windows.Storage;
 using static Files.App.Helpers.Win32PInvoke;
+using Microsoft.Extensions.Logging;
 
 namespace Files.App
 {
@@ -26,9 +27,11 @@ namespace Files.App
 
 		public static Semaphore? Pool { get; set; }
 
-		static Program()
+		private static void HandleSingleInstance()
 		{
-			var pool = new Semaphore(0, 1, $"Files-{AppLifecycleHelper.AppEnvironment}-Instance", out var isNew);
+			// Use a simple hardcoded environment name to avoid early Package.Current access
+			var envName = "Dev"; // Will be properly initialized later in the app lifecycle
+			var pool = new Semaphore(0, 1, $"Files-{envName}-Instance", out var isNew);
 
 			if (!isNew)
 			{
@@ -58,6 +61,9 @@ namespace Files.App
 		{
 			Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
 			WinRT.ComWrappersSupport.InitializeComWrappers();
+
+			// Handle single instance after WinRT is initialized
+			HandleSingleInstance();
 
 			// We are about to do the first WinRT server call, in case the WinRT server is hanging
 			// we need to kill the server if there is no other Files instances already running
@@ -258,12 +264,19 @@ namespace Files.App
 				SetEvent(eventHandle);
 			});
 
-			_ = CoWaitForMultipleObjects(
+			var hr = CoWaitForMultipleObjects(
 				CWMO_DEFAULT,
 				INFINITE,
 				1,
 				[eventHandle],
 				out uint handleIndex);
+			
+			CloseHandle(eventHandle);
+			
+			if (hr.Failed)
+			{
+				App.Logger.LogError($"CoWaitForMultipleObjects failed with HRESULT: {hr}");
+			}
 		}
 
 		public static void OpenShellCommandInExplorer(string shellCommand, int pid)
@@ -281,12 +294,19 @@ namespace Files.App
 				SetEvent(eventHandle);
 			});
 
-			_ = CoWaitForMultipleObjects(
+			var hr = CoWaitForMultipleObjects(
 				CWMO_DEFAULT,
 				INFINITE,
 				1,
 				[eventHandle],
 				out uint handleIndex);
+			
+			CloseHandle(eventHandle);
+			
+			if (hr.Failed)
+			{
+				App.Logger.LogError($"CoWaitForMultipleObjects failed with HRESULT: {hr}");
+			}
 		}
 	}
 }

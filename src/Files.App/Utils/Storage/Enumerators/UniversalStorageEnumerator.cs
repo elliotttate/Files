@@ -45,7 +45,7 @@ namespace Files.App.Utils.Storage
 
 				try
 				{
-					items = await rootFolder.GetItemsAsync(count, maxItemsToRetrieve);
+					items = await rootFolder.GetItemsAsync(count, maxItemsToRetrieve).AsTask().ConfigureAwait(false);
 					if (items is null || items.Count == 0)
 					{
 						break;
@@ -60,8 +60,9 @@ namespace Files.App.Utils.Storage
 					ex is FileNotFoundException ||
 					(uint)ex.HResult == 0x80070490) // ERROR_NOT_FOUND
 				{
-					// If some unexpected exception is thrown - enumerate this folder file by file - just to be sure
-					items = await EnumerateFileByFile(rootFolder, count, maxItemsToRetrieve);
+					// Don't try file-by-file enumeration for access denied errors as it will cause the same errors
+					App.Logger.LogDebug(ex, "Access denied while enumerating directory contents.");
+					break;
 				}
 				catch (Exception ex)
 				{
@@ -118,7 +119,7 @@ namespace Files.App.Utils.Storage
 
 				if (intermediateAction is not null && (items.Count == maxItemsToRetrieve || sampler.CheckNow()))
 				{
-					await intermediateAction(tempList);
+					await intermediateAction(tempList).ConfigureAwait(false);
 
 					// clear the temporary list every time we do an intermediate action
 					tempList.Clear();
@@ -137,7 +138,7 @@ namespace Files.App.Utils.Storage
 				IStorageItem item;
 				try
 				{
-					var results = await rootFolder.GetItemsAsync(i, 1);
+					var results = await rootFolder.GetItemsAsync(i, 1).AsTask().ConfigureAwait(false);
 
 					item = results?.FirstOrDefault();
 					if (item is null)
@@ -171,70 +172,83 @@ namespace Files.App.Utils.Storage
 			StorageFolderWithPath currentStorageFolder,
 			CancellationToken cancellationToken)
 		{
-			var basicProperties = await folder.GetBasicPropertiesAsync();
-			if (!cancellationToken.IsCancellationRequested)
+			try
 			{
-				if (folder is ShortcutStorageFolder linkFolder)
+				var basicProperties = await folder.GetBasicPropertiesAsync().AsTask().ConfigureAwait(false);
+				if (!cancellationToken.IsCancellationRequested)
 				{
-					return new ShortcutItem(folder.FolderRelativeId)
+					if (folder is ShortcutStorageFolder linkFolder)
 					{
-						PrimaryItemAttribute = StorageItemTypes.Folder,
-						IsHiddenItem = false,
-						Opacity = 1,
-						FileImage = null,
-						LoadFileIcon = false,
-						ItemNameRaw = folder.DisplayName,
-						ItemDateModifiedReal = basicProperties.DateModified,
-						ItemDateCreatedReal = folder.DateCreated,
-						ItemType = folder.DisplayType,
-						ItemPath = folder.Path,
-						FileSize = null,
-						FileSizeBytes = 0,
-						TargetPath = linkFolder.TargetPath,
-						Arguments = linkFolder.Arguments,
-						WorkingDirectory = linkFolder.WorkingDirectory,
-						RunAsAdmin = linkFolder.RunAsAdmin,
-						ShowWindowCommand = linkFolder.ShowWindowCommand
-					};
-				}
-				else if (folder is BinStorageFolder binFolder)
-				{
-					return new RecycleBinItem(folder.FolderRelativeId)
+						return new ShortcutItem(folder.FolderRelativeId)
+						{
+							PrimaryItemAttribute = StorageItemTypes.Folder,
+							IsHiddenItem = false,
+							Opacity = 1,
+							FileImage = null,
+							LoadFileIcon = false,
+							ItemNameRaw = folder.DisplayName,
+							ItemDateModifiedReal = basicProperties.DateModified,
+							ItemDateCreatedReal = folder.DateCreated,
+							ItemType = folder.DisplayType,
+							ItemPath = folder.Path,
+							FileSize = null,
+							FileSizeBytes = 0,
+							TargetPath = linkFolder.TargetPath,
+							Arguments = linkFolder.Arguments,
+							WorkingDirectory = linkFolder.WorkingDirectory,
+							RunAsAdmin = linkFolder.RunAsAdmin,
+							ShowWindowCommand = linkFolder.ShowWindowCommand
+						};
+					}
+					else if (folder is BinStorageFolder binFolder)
 					{
-						PrimaryItemAttribute = StorageItemTypes.Folder,
-						ItemNameRaw = folder.DisplayName,
-						ItemDateModifiedReal = basicProperties.DateModified,
-						ItemDateCreatedReal = folder.DateCreated,
-						ItemType = folder.DisplayType,
-						IsHiddenItem = false,
-						Opacity = 1,
-						FileImage = null,
-						LoadFileIcon = false,
-						ItemPath = string.IsNullOrEmpty(folder.Path) ? PathNormalization.Combine(currentStorageFolder.Path, folder.Name) : folder.Path,
-						FileSize = basicProperties.Size.ToSizeString(),
-						FileSizeBytes = (long)basicProperties.Size,
-						ItemDateDeletedReal = binFolder.DateDeleted,
-						ItemOriginalPath = binFolder.OriginalPath,
-					};
-				}
-				else
-				{
-					return new ListedItem(folder.FolderRelativeId)
+						return new RecycleBinItem(folder.FolderRelativeId)
+						{
+							PrimaryItemAttribute = StorageItemTypes.Folder,
+							ItemNameRaw = folder.DisplayName,
+							ItemDateModifiedReal = basicProperties.DateModified,
+							ItemDateCreatedReal = folder.DateCreated,
+							ItemType = folder.DisplayType,
+							IsHiddenItem = false,
+							Opacity = 1,
+							FileImage = null,
+							LoadFileIcon = false,
+							ItemPath = string.IsNullOrEmpty(folder.Path) ? PathNormalization.Combine(currentStorageFolder.Path, folder.Name) : folder.Path,
+							FileSize = basicProperties.Size.ToSizeString(),
+							FileSizeBytes = (long)basicProperties.Size,
+							ItemDateDeletedReal = binFolder.DateDeleted,
+							ItemOriginalPath = binFolder.OriginalPath,
+						};
+					}
+					else
 					{
-						PrimaryItemAttribute = StorageItemTypes.Folder,
-						ItemNameRaw = folder.DisplayName,
-						ItemDateModifiedReal = basicProperties.DateModified,
-						ItemDateCreatedReal = folder.DateCreated,
-						ItemType = folder.DisplayType,
-						IsHiddenItem = false,
-						Opacity = 1,
-						FileImage = null,
-						LoadFileIcon = false,
-						ItemPath = string.IsNullOrEmpty(folder.Path) ? PathNormalization.Combine(currentStorageFolder.Path, folder.Name) : folder.Path,
-						FileSize = null,
-						FileSizeBytes = 0
-					};
+						return new ListedItem(folder.FolderRelativeId)
+						{
+							PrimaryItemAttribute = StorageItemTypes.Folder,
+							ItemNameRaw = folder.DisplayName,
+							ItemDateModifiedReal = basicProperties.DateModified,
+							ItemDateCreatedReal = folder.DateCreated,
+							ItemType = folder.DisplayType,
+							IsHiddenItem = false,
+							Opacity = 1,
+							FileImage = null,
+							LoadFileIcon = false,
+							ItemPath = string.IsNullOrEmpty(folder.Path) ? PathNormalization.Combine(currentStorageFolder.Path, folder.Name) : folder.Path,
+							FileSize = null,
+							FileSizeBytes = 0
+						};
+					}
 				}
+			}
+			catch (UnauthorizedAccessException)
+			{
+				// Return null for inaccessible folders to prevent exception spam
+				return null;
+			}
+			catch (Exception ex)
+			{
+				App.Logger.LogDebug(ex, "Error getting folder properties for {FolderPath}", folder.Path);
+				return null;
 			}
 
 			return null;
@@ -245,99 +259,112 @@ namespace Files.App.Utils.Storage
 			StorageFolderWithPath currentStorageFolder,
 			CancellationToken cancellationToken)
 		{
-			var basicProperties = await file.GetBasicPropertiesAsync();
-			// Display name does not include extension
-			var itemName = file.Name;
-			var itemModifiedDate = basicProperties.DateModified;
-			var itemCreatedDate = file.DateCreated;
-			var itemPath = string.IsNullOrEmpty(file.Path) ? PathNormalization.Combine(currentStorageFolder.Path, file.Name) : file.Path;
-			var itemSize = basicProperties.Size.ToSizeString();
-			var itemSizeBytes = basicProperties.Size;
-			var itemType = file.DisplayType;
-			var itemFileExtension = file.FileType;
-			var itemThumbnailImgVis = false;
-
-			if (cancellationToken.IsCancellationRequested)
-				return null;
-
-			// TODO: is this needed to be handled here?
-			if (App.LibraryManager.TryGetLibrary(file.Path, out LibraryLocationItem library))
+			try
 			{
-				return new LibraryItem(library)
+				var basicProperties = await file.GetBasicPropertiesAsync().AsTask().ConfigureAwait(false);
+				// Display name does not include extension
+				var itemName = file.Name;
+				var itemModifiedDate = basicProperties.DateModified;
+				var itemCreatedDate = file.DateCreated;
+				var itemPath = string.IsNullOrEmpty(file.Path) ? PathNormalization.Combine(currentStorageFolder.Path, file.Name) : file.Path;
+				var itemSize = basicProperties.Size.ToSizeString();
+				var itemSizeBytes = basicProperties.Size;
+				var itemType = file.DisplayType;
+				var itemFileExtension = file.FileType;
+				var itemThumbnailImgVis = false;
+
+				if (cancellationToken.IsCancellationRequested)
+					return null;
+
+				// TODO: is this needed to be handled here?
+				if (App.LibraryManager.TryGetLibrary(file.Path, out LibraryLocationItem library))
 				{
-					Opacity = 1,
-					ItemDateModifiedReal = itemModifiedDate,
-					ItemDateCreatedReal = itemCreatedDate,
-				};
-			}
-			else
-			{
-				if (file is ShortcutStorageFile linkFile)
-				{
-					var isUrl = FileExtensionHelpers.IsWebLinkFile(linkFile.Name);
-					return new ShortcutItem(file.FolderRelativeId)
+					return new LibraryItem(library)
 					{
-						PrimaryItemAttribute = StorageItemTypes.File,
-						FileExtension = itemFileExtension,
-						IsHiddenItem = false,
 						Opacity = 1,
-						FileImage = null,
-						LoadFileIcon = itemThumbnailImgVis,
-						ItemNameRaw = itemName,
 						ItemDateModifiedReal = itemModifiedDate,
 						ItemDateCreatedReal = itemCreatedDate,
-						ItemType = itemType,
-						ItemPath = itemPath,
-						FileSize = itemSize,
-						FileSizeBytes = (long)itemSizeBytes,
-						TargetPath = linkFile.TargetPath,
-						Arguments = linkFile.Arguments,
-						WorkingDirectory = linkFile.WorkingDirectory,
-						RunAsAdmin = linkFile.RunAsAdmin,
-						ShowWindowCommand = linkFile.ShowWindowCommand,
-						IsUrl = isUrl,
-					};
-				}
-				else if (file is BinStorageFile binFile)
-				{
-					return new RecycleBinItem(file.FolderRelativeId)
-					{
-						PrimaryItemAttribute = StorageItemTypes.File,
-						FileExtension = itemFileExtension,
-						IsHiddenItem = false,
-						Opacity = 1,
-						FileImage = null,
-						LoadFileIcon = itemThumbnailImgVis,
-						ItemNameRaw = itemName,
-						ItemDateModifiedReal = itemModifiedDate,
-						ItemDateCreatedReal = itemCreatedDate,
-						ItemType = itemType,
-						ItemPath = itemPath,
-						FileSize = itemSize,
-						FileSizeBytes = (long)itemSizeBytes,
-						ItemDateDeletedReal = binFile.DateDeleted,
-						ItemOriginalPath = binFile.OriginalPath
 					};
 				}
 				else
 				{
-					return new ListedItem(file.FolderRelativeId)
+					if (file is ShortcutStorageFile linkFile)
 					{
-						PrimaryItemAttribute = StorageItemTypes.File,
-						FileExtension = itemFileExtension,
-						IsHiddenItem = false,
-						Opacity = 1,
-						FileImage = null,
-						LoadFileIcon = itemThumbnailImgVis,
-						ItemNameRaw = itemName,
-						ItemDateModifiedReal = itemModifiedDate,
-						ItemDateCreatedReal = itemCreatedDate,
-						ItemType = itemType,
-						ItemPath = itemPath,
-						FileSize = itemSize,
-						FileSizeBytes = (long)itemSizeBytes,
-					};
+						var isUrl = FileExtensionHelpers.IsWebLinkFile(linkFile.Name);
+						return new ShortcutItem(file.FolderRelativeId)
+						{
+							PrimaryItemAttribute = StorageItemTypes.File,
+							FileExtension = itemFileExtension,
+							IsHiddenItem = false,
+							Opacity = 1,
+							FileImage = null,
+							LoadFileIcon = itemThumbnailImgVis,
+							ItemNameRaw = itemName,
+							ItemDateModifiedReal = itemModifiedDate,
+							ItemDateCreatedReal = itemCreatedDate,
+							ItemType = itemType,
+							ItemPath = itemPath,
+							FileSize = itemSize,
+							FileSizeBytes = (long)itemSizeBytes,
+							TargetPath = linkFile.TargetPath,
+							Arguments = linkFile.Arguments,
+							WorkingDirectory = linkFile.WorkingDirectory,
+							RunAsAdmin = linkFile.RunAsAdmin,
+							ShowWindowCommand = linkFile.ShowWindowCommand,
+							IsUrl = isUrl,
+						};
+					}
+					else if (file is BinStorageFile binFile)
+					{
+						return new RecycleBinItem(file.FolderRelativeId)
+						{
+							PrimaryItemAttribute = StorageItemTypes.File,
+							FileExtension = itemFileExtension,
+							IsHiddenItem = false,
+							Opacity = 1,
+							FileImage = null,
+							LoadFileIcon = itemThumbnailImgVis,
+							ItemNameRaw = itemName,
+							ItemDateModifiedReal = itemModifiedDate,
+							ItemDateCreatedReal = itemCreatedDate,
+							ItemType = itemType,
+							ItemPath = itemPath,
+							FileSize = itemSize,
+							FileSizeBytes = (long)itemSizeBytes,
+							ItemDateDeletedReal = binFile.DateDeleted,
+							ItemOriginalPath = binFile.OriginalPath
+						};
+					}
+					else
+					{
+						return new ListedItem(file.FolderRelativeId)
+						{
+							PrimaryItemAttribute = StorageItemTypes.File,
+							FileExtension = itemFileExtension,
+							IsHiddenItem = false,
+							Opacity = 1,
+							FileImage = null,
+							LoadFileIcon = itemThumbnailImgVis,
+							ItemNameRaw = itemName,
+							ItemDateModifiedReal = itemModifiedDate,
+							ItemDateCreatedReal = itemCreatedDate,
+							ItemType = itemType,
+							ItemPath = itemPath,
+							FileSize = itemSize,
+							FileSizeBytes = (long)itemSizeBytes,
+						};
+					}
 				}
+			}
+			catch (UnauthorizedAccessException)
+			{
+				// Return null for inaccessible files to prevent exception spam
+				return null;
+			}
+			catch (Exception ex)
+			{
+				App.Logger.LogDebug(ex, "Error getting file properties for {FilePath}", file.Path);
+				return null;
 			}
 
 			return null;

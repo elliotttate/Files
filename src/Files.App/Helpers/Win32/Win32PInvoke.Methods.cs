@@ -7,6 +7,7 @@ using System.Runtime.InteropServices.ComTypes;
 using System.Text;
 using Windows.Win32.Foundation;
 using Windows.Win32.System.Com;
+using Vanara.PInvoke;
 
 namespace Files.App.Helpers
 {
@@ -70,7 +71,7 @@ namespace Files.App.Helpers
 		);
 
 		[DllImport("ole32.dll")]
-		public static extern uint CoWaitForMultipleObjects(
+		public static extern Vanara.PInvoke.HRESULT CoWaitForMultipleObjects(
 			uint dwFlags,
 			uint dwMilliseconds,
 			ulong nHandles,
@@ -308,9 +309,9 @@ namespace Files.App.Helpers
 			[MarshalAs(UnmanagedType.LPWStr)] string pszPath);
 
 		[DllImport("shlwapi.dll", CallingConvention = CallingConvention.StdCall, PreserveSig = true, CharSet = CharSet.Unicode)]
-		public static extern HRESULT SHCreateStreamOnFileEx(
+		public static extern Vanara.PInvoke.HRESULT SHCreateStreamOnFileEx(
 			string pszFile,
-			STGM grfMode,
+			Vanara.PInvoke.STGM grfMode,
 			uint dwAttributes,
 			uint fCreate,
 			IntPtr pstmTemplate,
@@ -318,7 +319,7 @@ namespace Files.App.Helpers
 		);
 
 		[DllImport("shell32.dll", CallingConvention = CallingConvention.StdCall, PreserveSig = true, CharSet = CharSet.Unicode)]
-		public static extern HRESULT SHCreateItemFromParsingName(
+		public static extern Vanara.PInvoke.HRESULT SHCreateItemFromParsingName(
 			string pszPath,
 			IntPtr pbc,
 			ref Guid riid,
@@ -326,7 +327,7 @@ namespace Files.App.Helpers
 		);
 
 		[DllImport("ole32.dll", CallingConvention = CallingConvention.StdCall)]
-		public static extern HRESULT CoCreateInstance(
+		public static extern Vanara.PInvoke.HRESULT CoCreateInstance(
 			ref Guid rclsid,
 			IntPtr pUnkOuter,
 			ClassContext dwClsContext,

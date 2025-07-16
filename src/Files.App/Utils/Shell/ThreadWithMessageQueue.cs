@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 using System.Collections.Concurrent;
+using Vanara.PInvoke;
 
 namespace Files.App.Utils.Shell
 {
@@ -43,10 +44,28 @@ namespace Files.App.Utils.Shell
 
 			thread = new Thread(new ThreadStart(() =>
 			{
-				foreach (var message in messageQueue.GetConsumingEnumerable())
+				// Initialize COM for STA thread
+				var hrOle = Ole32.OleInitialize(default);
+				try
 				{
-					var res = message.payload();
-					message.tcs.SetResult(res);
+					foreach (var message in messageQueue.GetConsumingEnumerable())
+					{
+						try
+						{
+							var res = message.payload();
+							message.tcs.SetResult(res);
+						}
+						catch (Exception ex)
+						{
+							message.tcs.SetException(ex);
+						}
+					}
+				}
+				finally
+				{
+					// Uninitialize COM when thread exits
+					if (hrOle.Succeeded)
+						Ole32.OleUninitialize();
 				}
 			}));
 

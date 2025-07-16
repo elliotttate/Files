@@ -277,7 +277,14 @@ namespace Files.App.Utils.Cloud
 			// If `path` contains a shortcut named "My Drive", store its target in `shellFolderBaseFirst`.
 			// This happens when "My Drive syncing options" is set to "Mirror files".
 			// TODO: Avoid to use Vanara (#15000)
-			using var rootFolder = ShellFolderExtensions.GetShellItemFromPathOrPIDL(path) as ShellFolder;
+			using var shellItem = ShellFolderExtensions.GetShellItemFromPathOrPIDL(path);
+			if (shellItem == null)
+			{
+				// Shell item could not be retrieved, fallback to standard path handling
+				path = Path.Combine(path, "My Drive");
+				return ValidatePath(path);
+			}
+			using var rootFolder = shellItem as ShellFolder;
 			var myDriveFolder = Environment.ExpandEnvironmentVariables((
 					rootFolder?.FirstOrDefault(si =>
 						si.Name?.Equals("My Drive") ?? false) as ShellLink)?.TargetPath

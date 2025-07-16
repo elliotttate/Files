@@ -127,7 +127,11 @@ namespace Files.App.Utils.Shell
 				try
 				{
 					foreach (var filePathItem in filePathList.Where(x => !string.IsNullOrEmpty(x)))
-						shellItems.Add(ShellFolderExtensions.GetShellItemFromPathOrPIDL(filePathItem));
+					{
+						var shellItem = ShellFolderExtensions.GetShellItemFromPathOrPIDL(filePathItem);
+						if (shellItem != null)
+							shellItems.Add(shellItem);
+					}
 
 					return GetContextMenuForFiles([.. shellItems], flags, owningThread, itemFilter);
 				}

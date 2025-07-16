@@ -93,6 +93,11 @@ namespace Files.App.Utils.Storage
 			try
 			{
 				using var shellItem = ShellFolderExtensions.GetShellItemFromPathOrPIDL(path);
+				if (shellItem == null)
+				{
+					// Shell item could not be retrieved (e.g., shell namespace extension not found)
+					return default;
+				}
 				return ShellFolderExtensions.GetShellFileItem(shellItem);
 			}
 			catch

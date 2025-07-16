@@ -24,7 +24,8 @@ namespace Files.App.Data.Items
 		private readonly WNDPROC _oldWndProc;
 		private readonly WNDPROC _newWndProc;
 
-		private readonly ApplicationDataContainer _applicationDataContainer = ApplicationData.Current.LocalSettings;
+		private ApplicationDataContainer? _applicationDataContainer;
+		private ApplicationDataContainer ApplicationDataContainer => _applicationDataContainer ??= ApplicationData.Current.LocalSettings;
 
 		/// <summary>
 		/// Gets hWnd of this <see cref="Window"/>.
@@ -132,8 +133,8 @@ namespace Files.App.Data.Items
 
 			var values = GetDataStore(out _, true);
 
-			if (_applicationDataContainer.Containers.ContainsKey("WinUIEx"))
-				_applicationDataContainer.Values.Remove("WinUIEx");
+			if (ApplicationDataContainer.Containers.ContainsKey("WinUIEx"))
+				ApplicationDataContainer.Values.Remove("WinUIEx");
 
 			values["MainWindowPlacementData"] = Convert.ToBase64String(data.ToArray());
 		}
@@ -201,18 +202,18 @@ namespace Files.App.Data.Items
 			IPropertySet values;
 			oldDataExists = false;
 
-			if (_applicationDataContainer.Containers.TryGetValue("Files", out var dataContainer))
+			if (ApplicationDataContainer.Containers.TryGetValue("Files", out var dataContainer))
 			{
 				values = dataContainer.Values;
 			}
-			else if (!useNewStore && _applicationDataContainer.Containers.TryGetValue("WinUIEx", out var oldDataContainer))
+			else if (!useNewStore && ApplicationDataContainer.Containers.TryGetValue("WinUIEx", out var oldDataContainer))
 			{
 				values = oldDataContainer.Values;
 				oldDataExists = true;
 			}
 			else
 			{
-				values = _applicationDataContainer.CreateContainer(
+				values = ApplicationDataContainer.CreateContainer(
 					"Files",
 					ApplicationDataCreateDisposition.Always).Values;
 			}

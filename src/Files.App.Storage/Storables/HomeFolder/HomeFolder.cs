@@ -39,10 +39,24 @@ namespace Files.App.Storage.Storables
 		}
 
 		/// <inheritdoc/>
-		public IAsyncEnumerable<IStorableChild> GetQuickAccessFolderAsync(CancellationToken cancellationToken = default)
+		public async IAsyncEnumerable<IStorableChild> GetQuickAccessFolderAsync([EnumeratorCancellation] CancellationToken cancellationToken = default)
 		{
-			IFolder folder = new WindowsFolder(new Guid("3936e9e4-d92c-4eee-a85a-bc16d5ea0819"));
-			return folder.GetItemsAsync(StorableType.Folder, cancellationToken);
+			IFolder folder;
+			try
+			{
+				folder = new WindowsFolder(new Guid("3936e9e4-d92c-4eee-a85a-bc16d5ea0819"));
+			}
+			catch (Exception)
+			{
+				// Handle case where Frequent Places shell namespace extension is not available
+				// Return empty enumerable to gracefully handle the error
+				yield break;
+			}
+
+			await foreach (var item in folder.GetItemsAsync(StorableType.Folder, cancellationToken))
+			{
+				yield return item;
+			}
 		}
 
 		/// <inheritdoc/>

@@ -9,8 +9,11 @@ using Microsoft.UI.Xaml.Media.Imaging;
 using System.IO;
 using System.Text;
 using Windows.Storage;
+using Windows.Storage.Streams;
 using Windows.Win32.UI.WindowsAndMessaging;
 using ByteSize = ByteSizeLib.ByteSize;
+using Files.App.Services.Caching;
+using Files.App.Utils.Storage;
 
 #pragma warning disable CS0618 // Type or member is obsolete
 
@@ -25,6 +28,40 @@ namespace Files.App.Utils
 		protected static readonly IFileTagsSettingsService fileTagsSettingsService = Ioc.Default.GetRequiredService<IFileTagsSettingsService>();
 
 		protected static readonly IDateTimeFormatter dateTimeFormatter = Ioc.Default.GetRequiredService<IDateTimeFormatter>();
+
+		protected static IFileModelCacheService cacheService;
+		
+		// Cached values to avoid repeated lookups
+		private BitmapImage _cachedThumbnail;
+		private MediaProperties _cachedMediaProperties;
+		private bool _hasCheckedCache = false;
+		
+		static ListedItem()
+		{
+			try
+			{
+				cacheService = Ioc.Default.GetService<IFileModelCacheService>();
+				System.Diagnostics.Debug.WriteLine($"ListedItem static constructor: cacheService is {(cacheService != null ? "initialized" : "null")}");
+				
+				if (cacheService == null)
+				{
+					// Try to get it as required service to see if it throws
+					try
+					{
+						var requiredService = Ioc.Default.GetRequiredService<IFileModelCacheService>();
+						System.Diagnostics.Debug.WriteLine("GetRequiredService succeeded but GetService returned null!");
+					}
+					catch (Exception ex)
+					{
+						System.Diagnostics.Debug.WriteLine($"IFileModelCacheService not registered: {ex.Message}");
+					}
+				}
+			}
+			catch (Exception ex)
+			{
+				System.Diagnostics.Debug.WriteLine($"Failed to get IFileModelCacheService: {ex.Message}");
+			}
+		}
 
 		public bool IsHiddenItem { get; set; } = false;
 
@@ -67,7 +104,7 @@ namespace Files.App.Utils
 			set => SetProperty(ref needsPlaceholderGlyph, value);
 		}
 
-		private bool loadFileIcon;
+		private bool loadFileIcon = true;
 		public bool LoadFileIcon
 		{
 			get => loadFileIcon;
@@ -173,7 +210,27 @@ namespace Files.App.Utils
 		private BitmapImage fileImage;
 		public BitmapImage FileImage
 		{
-			get => fileImage;
+			get
+			{
+				// Return the field value if already set
+				if (fileImage != null)
+					return fileImage;
+				
+				// Try to get cached thumbnail only once
+				if (!_hasCheckedCache && !thumbnailLoaded && cacheService != null && !string.IsNullOrEmpty(ItemPath))
+				{
+					_hasCheckedCache = true;
+					_cachedThumbnail = cacheService.GetCachedThumbnail(ItemPath);
+					if (_cachedThumbnail != null)
+					{
+						fileImage = _cachedThumbnail;
+						LoadFileIcon = true;
+						NeedsPlaceholderGlyph = false;
+						thumbnailLoaded = true;
+					}
+				}
+				return fileImage;
+			}
 			set
 			{
 				if (SetProperty(ref fileImage, value))
@@ -182,6 +239,13 @@ namespace Files.App.Utils
 					{
 						LoadFileIcon = true;
 						NeedsPlaceholderGlyph = false;
+						_hasCheckedCache = true; // No need to check cache again
+						
+						// Add to cache if cache service is available
+						if (cacheService != null && !string.IsNullOrEmpty(ItemPath))
+						{
+							cacheService.AddOrUpdateThumbnail(ItemPath, value);
+						}
 					}
 				}
 			}
@@ -356,21 +420,66 @@ namespace Files.App.Utils
 		private string imageDimensions;
 		public string ImageDimensions
 		{
-			get => imageDimensions;
+			get
+			{
+				// Lazy load media properties if not already loaded
+				if (string.IsNullOrEmpty(imageDimensions) && !mediaPropertiesLoaded && cacheService != null)
+				{
+					var cached = cacheService.GetCachedMediaProperties(ItemPath);
+					if (cached != null)
+					{
+						imageDimensions = cached.ImageDimensions;
+						return imageDimensions;
+					}
+					// Trigger async load
+					_ = LoadMediaPropertiesAsync();
+				}
+				return imageDimensions;
+			}
 			set => SetProperty(ref imageDimensions, value);
 		}
 
 		private string fileVersion;
 		public string FileVersion
 		{
-			get => fileVersion;
+			get
+			{
+				// Lazy load media properties if not already loaded
+				if (string.IsNullOrEmpty(fileVersion) && !mediaPropertiesLoaded && cacheService != null)
+				{
+					var cached = cacheService.GetCachedMediaProperties(ItemPath);
+					if (cached != null)
+					{
+						fileVersion = cached.FileVersion;
+						return fileVersion;
+					}
+					// Trigger async load
+					_ = LoadMediaPropertiesAsync();
+				}
+				return fileVersion;
+			}
 			set => SetProperty(ref fileVersion, value);
 		}
 
 		private string mediaDuration;
 		public string MediaDuration
 		{
-			get => mediaDuration;
+			get
+			{
+				// Lazy load media properties if not already loaded
+				if (string.IsNullOrEmpty(mediaDuration) && !mediaPropertiesLoaded && cacheService != null)
+				{
+					var cached = cacheService.GetCachedMediaProperties(ItemPath);
+					if (cached != null)
+					{
+						mediaDuration = cached.MediaDuration;
+						return mediaDuration;
+					}
+					// Trigger async load
+					_ = LoadMediaPropertiesAsync();
+				}
+				return mediaDuration;
+			}
 			set => SetProperty(ref mediaDuration, value);
 		}
 
@@ -438,6 +547,21 @@ namespace Files.App.Utils
 		public bool IsDriveRoot => ItemPath == PathNormalization.GetPathRoot(ItemPath);
 		public bool IsElevationRequired { get; set; }
 
+		// Lazy loading support
+		private volatile int _mediaPropertiesLoaded = 0;
+		private bool mediaPropertiesLoaded
+		{
+			get => _mediaPropertiesLoaded == 1;
+			set => Interlocked.Exchange(ref _mediaPropertiesLoaded, value ? 1 : 0);
+		}
+
+		private volatile int _thumbnailLoaded = 0;
+		private bool thumbnailLoaded
+		{
+			get => _thumbnailLoaded == 1;
+			set => Interlocked.Exchange(ref _thumbnailLoaded, value ? 1 : 0);
+		}
+
 		private BaseStorageFile itemFile;
 		public BaseStorageFile ItemFile
 		{
@@ -459,6 +583,90 @@ namespace Files.App.Utils
 		public void UpdateContainsFilesFolders()
 		{
 			ContainsFilesOrFolders = FolderHelpers.CheckForFilesFolders(ItemPath);
+		}
+
+		/// <summary>
+		/// Loads media properties asynchronously
+		/// </summary>
+		private async Task LoadMediaPropertiesAsync()
+		{
+			if (mediaPropertiesLoaded || cacheService == null || string.IsNullOrEmpty(ItemPath))
+				return;
+
+			// Only load media properties for files, not folders
+			if (PrimaryItemAttribute == StorageItemTypes.Folder)
+				return;
+
+			try
+			{
+				var properties = await cacheService.LoadMediaPropertiesAsync(ItemPath, CancellationToken.None);
+				if (properties != null)
+				{
+					mediaPropertiesLoaded = true;
+					// Properties will be automatically updated through cache service events
+				}
+			}
+			catch (Exception ex)
+			{
+				System.Diagnostics.Debug.WriteLine($"Failed to load media properties for {ItemPath}: {ex.Message}");
+			}
+		}
+
+		/// <summary>
+		/// Loads thumbnail asynchronously
+		/// </summary>
+		public async Task LoadThumbnailAsync(uint thumbnailSize, CancellationToken cancellationToken = default)
+		{
+			System.Diagnostics.Debug.WriteLine($"LoadThumbnailAsync called for: {ItemPath}, loaded: {thumbnailLoaded}, cacheService: {cacheService != null}");
+			
+			if (thumbnailLoaded || string.IsNullOrEmpty(ItemPath))
+				return;
+
+			try
+			{
+				// If cache service is available, use it
+				if (cacheService != null)
+				{
+					// Check cache first
+					var cached = cacheService.GetCachedThumbnail(ItemPath);
+					if (cached != null)
+					{
+						System.Diagnostics.Debug.WriteLine($"Found cached thumbnail for: {ItemPath}");
+						FileImage = cached;
+						LoadFileIcon = true;
+						NeedsPlaceholderGlyph = false;
+						thumbnailLoaded = true;
+						return;
+					}
+
+					// Queue for loading
+					System.Diagnostics.Debug.WriteLine($"Queueing thumbnail load for: {ItemPath}");
+					await cacheService.QueueThumbnailLoadAsync(ItemPath, this, thumbnailSize, cancellationToken);
+					thumbnailLoaded = true;
+				}
+				else
+				{
+					// Fallback: Load icon directly without cache
+					System.Diagnostics.Debug.WriteLine($"Loading icon directly (no cache service) for: {ItemPath}");
+					var iconData = await FileThumbnailHelper.GetIconAsync(ItemPath, thumbnailSize, PrimaryItemAttribute == StorageItemTypes.Folder, IconOptions.UseCurrentScale);
+					
+					if (iconData != null && iconData.Length > 0)
+					{
+						using var ms = new MemoryStream(iconData);
+						var image = new BitmapImage();
+						await image.SetSourceAsync(ms.AsRandomAccessStream());
+						FileImage = image;
+						LoadFileIcon = true;
+						NeedsPlaceholderGlyph = false;
+					}
+					
+					thumbnailLoaded = true;
+				}
+			}
+			catch (Exception ex)
+			{
+				System.Diagnostics.Debug.WriteLine($"Failed to load thumbnail for {ItemPath}: {ex.Message}");
+			}
 		}
 	}
 
@@ -514,6 +722,8 @@ namespace Files.App.Utils
 			FileSizeBytes = item.Size;
 			ContainsFilesOrFolders = !isFile;
 			FileImage = null;
+			LoadFileIcon = true;
+			NeedsPlaceholderGlyph = true;
 			FileSize = isFile ? FileSizeBytes.ToSizeString() : null;
 			Opacity = 1;
 			IsHiddenItem = false;
@@ -588,6 +798,7 @@ namespace Files.App.Utils
 			CustomIcon = library.Icon;
 			//CustomIconSource = library.IconSource;
 			LoadFileIcon = true;
+			NeedsPlaceholderGlyph = true;
 
 			IsEmpty = library.IsEmpty;
 			DefaultSaveFolder = library.DefaultSaveFolder;

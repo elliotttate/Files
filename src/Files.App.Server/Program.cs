@@ -15,7 +15,8 @@ class Program
 {
 	internal static readonly AsyncManualResetEvent ExitSignalEvent = new();
 	private static readonly CancellationTokenSource cancellationTokenSource = new();
-	private static readonly StreamWriter logWriter = new(Path.Combine(ApplicationData.Current.LocalFolder.Path, "debug_server.log"), append: true) { AutoFlush = true };
+	private static StreamWriter? _logWriter;
+	private static StreamWriter LogWriter => _logWriter ??= new(Path.Combine(ApplicationData.Current.LocalFolder.Path, "debug_server.log"), append: true) { AutoFlush = true };
 
 	static async Task Main()
 	{
@@ -84,6 +85,6 @@ class Program
 
 	private static void OnFirstChanceException(object? sender, FirstChanceExceptionEventArgs e)
 	{
-		logWriter.WriteLine($"{DateTime.Now}|{e.Exception}");
+		LogWriter.WriteLine($"{DateTime.Now}|{e.Exception}");
 	}
 }

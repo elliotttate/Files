@@ -457,18 +457,29 @@ namespace Files.App.Services.Search
 		{
 			// For filtering existing items, we'll use Everything's search on the current directory
 			var firstItem = items.FirstOrDefault();
-			if (firstItem == null)
+			if (firstItem == null || string.IsNullOrEmpty(firstItem.ItemPath))
 				return new List<ListedItem>();
 
 			// Get the directory path from the first item
-			var directoryPath = Path.GetDirectoryName(firstItem.ItemPath);
+			string directoryPath;
+			try
+			{
+				directoryPath = Path.GetDirectoryName(firstItem.ItemPath);
+				if (string.IsNullOrEmpty(directoryPath))
+					return new List<ListedItem>();
+			}
+			catch (Exception ex)
+			{
+				App.Logger?.LogWarning(ex, "Failed to get directory path from {Path}", firstItem.ItemPath);
+				return new List<ListedItem>();
+			}
 			
 			// Search within this directory
 			var searchResults = await SearchAsync(query, directoryPath, cancellationToken);
 			
 			// Return only items that exist in the original collection
-			var itemPaths = new HashSet<string>(items.Select(i => i.ItemPath), StringComparer.OrdinalIgnoreCase);
-			return searchResults.Where(r => itemPaths.Contains(r.ItemPath)).ToList();
+			var itemPaths = new HashSet<string>(items.Select(i => i.ItemPath).Where(path => !string.IsNullOrEmpty(path)), StringComparer.OrdinalIgnoreCase);
+			return searchResults.Where(r => !string.IsNullOrEmpty(r.ItemPath) && itemPaths.Contains(r.ItemPath)).ToList();
 		}
 	}
 }

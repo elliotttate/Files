@@ -1231,6 +1231,13 @@ namespace Files.App.Views.Layouts
 
 				if (!listedItem.ItemPropertiesInitialized)
 				{
+					// Start loading thumbnails immediately for better responsiveness
+					if (listedItem.LoadFileIcon && listedItem.FileImage == null)
+					{
+						var thumbnailSize = (uint)LayoutSizeKindHelper.GetIconSize(FolderSettings.LayoutMode);
+						_ = listedItem.LoadThumbnailAsync(thumbnailSize);
+					}
+
 					uint callbackPhase = 3;
 					args.RegisterUpdateCallback(callbackPhase, async (s, c) =>
 					{

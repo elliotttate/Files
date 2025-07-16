@@ -10,7 +10,8 @@ namespace Files.App.Extensions
 {
 	public static class StringExtensions
 	{
-		private static IFoldersSettingsService FoldersSettingsService { get; } = Ioc.Default.GetRequiredService<IFoldersSettingsService>();
+		private static IFoldersSettingsService? _foldersSettingsService;
+		private static IFoldersSettingsService FoldersSettingsService => _foldersSettingsService ??= Ioc.Default.GetRequiredService<IFoldersSettingsService>();
 
 		/// <summary>
 		/// Returns true if <paramref name="path"/> starts with the path <paramref name="baseDirPath"/>.

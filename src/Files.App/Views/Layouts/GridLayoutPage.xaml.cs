@@ -157,24 +157,33 @@ namespace Files.App.Views.Layouts
 
 		protected override void ItemManipulationModel_ScrollIntoViewInvoked(object? sender, ListedItem e)
 		{
-			FileList.ScrollIntoView(e);
+			DispatcherQueue.TryEnqueue(() =>
+			{
+				FileList.ScrollIntoView(e);
+			});
 		}
 
 		protected override void ItemManipulationModel_ScrollToTopInvoked(object? sender, EventArgs e)
 		{
-			if (FolderSettings?.LayoutMode is FolderLayoutModes.ListView)
-				ContentScroller?.ChangeView(0, null, null, true);
-			else
-				ContentScroller?.ChangeView(null, 0, null, true);
+			DispatcherQueue.TryEnqueue(() =>
+			{
+				if (FolderSettings?.LayoutMode is FolderLayoutModes.ListView)
+					ContentScroller?.ChangeView(0, null, null, true);
+				else
+					ContentScroller?.ChangeView(null, 0, null, true);
+			});
 		}
 
 		protected override void ItemManipulationModel_FocusSelectedItemsInvoked(object? sender, EventArgs e)
 		{
-			if (SelectedItems.Any())
+			DispatcherQueue.TryEnqueue(() =>
 			{
-				FileList.ScrollIntoView(SelectedItems.Last());
-				(FileList.ContainerFromItem(SelectedItems.Last()) as GridViewItem)?.Focus(FocusState.Keyboard);
-			}
+				if (SelectedItems.Any())
+				{
+					FileList.ScrollIntoView(SelectedItems.Last());
+					(FileList.ContainerFromItem(SelectedItems.Last()) as GridViewItem)?.Focus(FocusState.Keyboard);
+				}
+			});
 		}
 
 		protected override void ItemManipulationModel_AddSelectedItemInvoked(object? sender, ListedItem e)

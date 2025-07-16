@@ -21,7 +21,7 @@ namespace Files.App.Helpers
 		{
 			if (path.StartsWith("::{", StringComparison.Ordinal))
 			{
-				path = $"shell:{path}";
+				path = $"shell:{path.Substring(1)}";
 			}
 
 			return await Win32Helper.StartSTATask(() =>
@@ -31,7 +31,15 @@ namespace Files.App.Helpers
 
 				try
 				{
-					using var shellFolder = ShellFolderExtensions.GetShellItemFromPathOrPIDL(path) as ShellFolder;
+					var shellItem = ShellFolderExtensions.GetShellItemFromPathOrPIDL(path);
+					if (shellItem is null)
+					{
+						// Shell namespace extension not found or not accessible
+						// Return empty result for graceful fallback
+						return (null, flc);
+					}
+
+					using var shellFolder = shellItem as ShellFolder;
 
 					if (shellFolder is null ||
 						(_controlPanel.PIDL.IsParentOf(shellFolder.PIDL, false) ||

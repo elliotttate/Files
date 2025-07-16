@@ -12,9 +12,20 @@ namespace Files.App.Utils.Storage
 		/// </summary>
 		public static async Task<byte[]?> GetIconAsync(string path, uint requestedSize, bool isFolder, IconOptions iconOptions)
 		{
-			var size = iconOptions.HasFlag(IconOptions.UseCurrentScale) ? requestedSize * App.AppModel.AppWindowDPI : requestedSize;
+			try
+			{
+				System.Diagnostics.Debug.WriteLine($"GetIconAsync called for: {path}, size: {requestedSize}, isFolder: {isFolder}");
+				var size = iconOptions.HasFlag(IconOptions.UseCurrentScale) ? requestedSize * App.AppModel.AppWindowDPI : requestedSize;
 
-			return await Win32Helper.StartSTATask(() => Win32Helper.GetIcon(path, (int)size, isFolder, iconOptions));
+				var result = await Win32Helper.StartSTATask(() => Win32Helper.GetIcon(path, (int)size, isFolder, iconOptions));
+				System.Diagnostics.Debug.WriteLine($"GetIconAsync result for {path}: {(result != null ? $"{result.Length} bytes" : "null")}");
+				return result;
+			}
+			catch (Exception ex)
+			{
+				System.Diagnostics.Debug.WriteLine($"GetIconAsync failed for {path}: {ex.Message}");
+				return null;
+			}
 		}
 
 		/// <summary>

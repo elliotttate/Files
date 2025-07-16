@@ -409,3 +409,52 @@ FodyWeavers.xsd
 *.sln.iml
 .idea/
 src/Files.App/Assets/FilesOpenDialog/Files.App.Launcher.exe.sha256
+Everything-SDK/src/Everything.c
+Everything-SDK/vs/sdk.dll.vcproj
+Everything-SDK/example/dll.test.c
+Everything-SDK/dll/Everything32.dll
+Everything-SDK/dll/Everything64.dll
+Everything-SDK/example/dll.test.cpp
+Everything-SDK/include/Everything.h
+Everything-SDK/ipc/everything_ipc.h
+Everything-SDK/lib/Everything32.lib
+Everything-SDK/lib/Everything64.lib
+Everything-SDK/src/Everything32.def
+Everything-SDK/src/Everything64.def
+Everything-SDK/example/CSharp/Form1.cs
+Everything-SDK/vs/sdk.dll.test.c.vcproj
+Everything-SDK/example/CSharp/Form1.resx
+Everything-SDK/example/CSharp/Program.cs
+Everything-SDK/example/CSharpx64/Form1.cs
+Everything-SDK/vs/sdk.dll.test.cpp.vcproj
+Everything-SDK/example/CSharpx64/Form1.resx
+Everything-SDK/example/CSharpx64/Program.cs
+Everything-SDK/example/CSharp/Form1.Designer.cs
+Everything-SDK/example/CSharpx64/Form1.Designer.cs
+Everything-SDK/example/CSharp/WindowsApplication1.sln
+Everything-SDK/example/CSharp/Properties/Resources.resx
+Everything-SDK/example/CSharp/Properties/AssemblyInfo.cs
+Everything-SDK/example/CSharp/WindowsApplication1.csproj
+Everything-SDK/example/CSharpx64/WindowsApplication1.sln
+Everything-SDK/example/CSharp/Properties/Settings.settings
+Everything-SDK/example/CSharpx64/Properties/Resources.resx
+Everything-SDK/example/CSharpx64/Properties/AssemblyInfo.cs
+Everything-SDK/example/CSharpx64/WindowsApplication1.csproj
+Everything-SDK/example/CSharp/Properties/Settings.Designer.cs
+Everything-SDK/example/CSharpx64/Properties/Settings.settings
+Everything-SDK/example/CSharp/Properties/Resources.Designer.cs
+Everything-SDK/example/Everything C\# CLI Example by dipique.URL
+Everything-SDK/example/CSharpx64/Properties/Settings.Designer.cs
+Everything-SDK/example/CSharpx64/Properties/Resources.Designer.cs
+Everything-SDK/example/Visual Basic/WindowsApplication1/WindowsApplication1.sln
+Everything-SDK/example/Visual Basic/WindowsApplication1/WindowsApplication1/Form1.vb
+Everything-SDK/example/Visual Basic/WindowsApplication1/WindowsApplication1/Form1.resx
+Everything-SDK/example/Visual Basic/WindowsApplication1/WindowsApplication1/Form1.Designer.vb
+Everything-SDK/example/Visual Basic/WindowsApplication1/WindowsApplication1/My Project/Resources.resx
+Everything-SDK/example/Visual Basic/WindowsApplication1/WindowsApplication1/My Project/AssemblyInfo.vb
+Everything-SDK/example/Visual Basic/WindowsApplication1/WindowsApplication1/WindowsApplication1.vbproj
+Everything-SDK/example/Visual Basic/WindowsApplication1/WindowsApplication1/My Project/Application.myapp
+Everything-SDK/example/Visual Basic/WindowsApplication1/WindowsApplication1/My Project/Settings.settings
+Everything-SDK/example/Visual Basic/WindowsApplication1/WindowsApplication1/My Project/Settings.Designer.vb
+Everything-SDK/example/Visual Basic/WindowsApplication1/WindowsApplication1/My Project/Resources.Designer.vb
+Everything-SDK/example/Visual Basic/WindowsApplication1/WindowsApplication1/My Project/Application.Designer.vb

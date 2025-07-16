@@ -112,28 +112,37 @@ namespace Files.App.Views.Layouts
 
 		protected override void ItemManipulationModel_ScrollIntoViewInvoked(object? sender, ListedItem e)
 		{
-			try
+			DispatcherQueue.TryEnqueue(() =>
 			{
-				FileList.ScrollIntoView(e, ScrollIntoViewAlignment.Default);
-			}
-			catch (Exception)
-			{
-				// Catch error where row index could not be found
-			}
+				try
+				{
+					FileList.ScrollIntoView(e, ScrollIntoViewAlignment.Default);
+				}
+				catch (Exception)
+				{
+					// Catch error where row index could not be found
+				}
+			});
 		}
 
 		protected override void ItemManipulationModel_ScrollToTopInvoked(object? sender, EventArgs e)
 		{
-			ContentScroller?.ChangeView(null, 0, null, true);
+			DispatcherQueue.TryEnqueue(() =>
+			{
+				ContentScroller?.ChangeView(null, 0, null, true);
+			});
 		}
 
 		protected override void ItemManipulationModel_FocusSelectedItemsInvoked(object? sender, EventArgs e)
 		{
-			if (SelectedItems?.Any() ?? false)
+			DispatcherQueue.TryEnqueue(() =>
 			{
-				FileList.ScrollIntoView(SelectedItems.Last());
-				(FileList.ContainerFromItem(SelectedItems.Last()) as ListViewItem)?.Focus(FocusState.Keyboard);
-			}
+				if (SelectedItems?.Any() ?? false)
+				{
+					FileList.ScrollIntoView(SelectedItems.Last());
+					(FileList.ContainerFromItem(SelectedItems.Last()) as ListViewItem)?.Focus(FocusState.Keyboard);
+				}
+			});
 		}
 
 		protected override void ItemManipulationModel_AddSelectedItemInvoked(object? sender, ListedItem e)

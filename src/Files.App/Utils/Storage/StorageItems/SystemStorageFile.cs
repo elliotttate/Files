@@ -1,6 +1,7 @@
 // Copyright (c) Files Community
 // Licensed under the MIT License.
 
+using Microsoft.Extensions.Logging;
 using System.IO;
 using System.Runtime.InteropServices.WindowsRuntime;
 using Windows.Foundation;
@@ -31,9 +32,36 @@ namespace Files.App.Utils.Storage
 		public SystemStorageFile(StorageFile file) => File = file;
 
 		public static IAsyncOperation<BaseStorageFile> FromPathAsync(string path)
-			=> AsyncInfo.Run<BaseStorageFile>(async (cancellationToken)
-				=> new SystemStorageFile(await StorageFile.GetFileFromPathAsync(path))
-			);
+			=> AsyncInfo.Run<BaseStorageFile>(async (cancellationToken) =>
+			{
+				try
+				{
+					var file = await StorageFile.GetFileFromPathAsync(path);
+					return new SystemStorageFile(file);
+				}
+				catch (UnauthorizedAccessException)
+				{
+					// Access denied to the file
+					return null;
+				}
+				catch (FileNotFoundException)
+				{
+					// File doesn't exist
+					return null;
+				}
+				catch (System.Runtime.InteropServices.COMException comEx)
+				{
+					// Handle Windows-specific COM errors (like 0xC000027B)
+					App.Logger?.LogWarning(comEx, $"COM exception accessing file: {path} (HRESULT: 0x{comEx.HResult:X8})");
+					return null;
+				}
+				catch (Exception ex)
+				{
+					// Log other exceptions but don't crash
+					App.Logger?.LogWarning(ex, $"Failed to get file from path: {path}");
+					return null;
+				}
+			});
 
 		public override IAsyncOperation<StorageFile> ToStorageFileAsync()
 			=> Task.FromResult(File).AsAsyncOperation();

@@ -3,6 +3,9 @@
 
 using System;
 using System.IO;
+using System.Linq;
+using System.Runtime.InteropServices;
+using Microsoft.Extensions.Logging;
 using Vanara.PInvoke;
 using Vanara.Windows.Shell;
 
@@ -167,7 +170,46 @@ namespace Files.App.Utils.Shell
 
 		public static ShellItem GetShellItemFromPathOrPIDL(string pathOrPIDL)
 		{
-			return GetStringAsPIDL(pathOrPIDL, out var pPIDL) ? ShellItem.Open(pPIDL) : ShellItem.Open(pathOrPIDL);
+			try
+			{
+				// For drive paths, check if the drive exists and is ready before attempting to open
+				if (pathOrPIDL.Length == 3 && pathOrPIDL.EndsWith(@":\", StringComparison.Ordinal))
+				{
+					try
+					{
+						var driveInfo = new DriveInfo(pathOrPIDL.Substring(0, 1));
+						if (!driveInfo.IsReady)
+						{
+							App.Logger.LogWarning($"Drive not ready: {pathOrPIDL}");
+							return null;
+						}
+					}
+					catch (ArgumentException)
+					{
+						App.Logger.LogWarning($"Invalid drive: {pathOrPIDL}");
+						return null;
+					}
+					catch (Exception ex)
+					{
+						App.Logger.LogWarning($"Error checking drive {pathOrPIDL}: {ex.Message}");
+						return null;
+					}
+				}
+
+				return GetStringAsPIDL(pathOrPIDL, out var pPIDL) ? ShellItem.Open(pPIDL) : ShellItem.Open(pathOrPIDL);
+			}
+			catch (COMException ex) when (ex.HResult == unchecked((int)0x80070490)) // ERROR_NOT_FOUND
+			{
+				// Shell namespace extension not found or not accessible
+				// This can happen with certain GUIDs like Frequent Places when they're not available
+				App.Logger.LogWarning($"Shell namespace extension not found: {pathOrPIDL}. Error: {ex.Message}");
+				return null;
+			}
+			catch (Exception ex)
+			{
+				App.Logger.LogWarning($"Failed to get shell item from path or PIDL: {pathOrPIDL}. Error: {ex.Message}");
+				return null;
+			}
 		}
 	}
 }

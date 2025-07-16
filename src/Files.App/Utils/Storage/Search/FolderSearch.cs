@@ -73,7 +73,7 @@ namespace Files.App.Utils.Storage
 			{
 				App.Logger?.LogInformation($"=== FolderSearch.SearchAsync START === Query: '{Query}', Folder: '{Folder}'");
 				
-				// Check if we should use Everything for global search
+				// Check if we should use Everything for global search  
 				var userSettingsService = Ioc.Default.GetRequiredService<IUserSettingsService>();
 				var searchEngine = userSettingsService.GeneralSettingsService.PreferredSearchEngine;
 				App.Logger?.LogInformation($"Search Engine Setting: {searchEngine}");
@@ -163,7 +163,7 @@ namespace Files.App.Utils.Storage
 			}
 			catch (Exception e)
 			{
-				App.Logger.LogWarning(e, "Search failure");
+				App.Logger?.LogWarning(e, "Search failure");
 			}
 		}
 
@@ -203,7 +203,7 @@ namespace Files.App.Utils.Storage
 			}
 			catch (Exception e)
 			{
-				App.Logger.LogWarning(e, "Search failure");
+				App.Logger?.LogWarning(e, "Search failure");
 			}
 
 			return results;
@@ -211,10 +211,22 @@ namespace Files.App.Utils.Storage
 
 		private async Task SearchAsync(BaseStorageFolder folder, IList<ListedItem> results, CancellationToken token)
 		{
+			if (folder is null)
+			{
+				App.Logger?.LogWarning("SearchAsync called with null folder");
+				return;
+			}
+
 			//var sampler = new IntervalSampler(500);
 			uint index = 0;
 			var stepSize = Math.Min(defaultStepSize, UsedMaxItemCount);
 			var options = ToQueryOptions();
+
+			if (options is null)
+			{
+				App.Logger?.LogWarning("ToQueryOptions returned null");
+				return;
+			}
 
 			var queryResult = folder.CreateItemQueryWithOptions(options);
 			var items = await queryResult.GetItemsAsync(0, stepSize);
@@ -235,7 +247,7 @@ namespace Files.App.Utils.Storage
 					}
 					catch (Exception ex)
 					{
-						App.Logger.LogWarning(ex, "Error creating ListedItem from StorageItem");
+						App.Logger?.LogWarning(ex, "Error creating ListedItem from StorageItem");
 					}
 
 					if (results.Count == 32 || results.Count % 300 == 0 /*|| sampler.CheckNow()*/)
@@ -310,14 +322,25 @@ namespace Files.App.Utils.Storage
 				{
 					try
 					{
-						IStorageItem item = (BaseStorageFile)await GetStorageFileAsync(match.FilePath);
-						item ??= (BaseStorageFolder)await GetStorageFolderAsync(match.FilePath);
-						if (!item.Name.StartsWith('.') || UserSettingsService.FoldersSettingsService.ShowDotFiles)
+						IStorageItem item = null;
+						var fileResult = await GetStorageFileAsync(match.FilePath);
+						if (fileResult && fileResult.Result is not null)
+						{
+							item = fileResult.Result;
+						}
+						else
+						{
+							var folderResult = await GetStorageFolderAsync(match.FilePath);
+							if (folderResult && folderResult.Result is not null)
+								item = folderResult.Result;
+						}
+						
+						if (item is not null && (!item.Name.StartsWith('.') || UserSettingsService.FoldersSettingsService.ShowDotFiles))
 							results.Add(await GetListedItemAsync(item));
 					}
 					catch (Exception ex)
 					{
-						App.Logger.LogWarning(ex, "Error creating ListedItem from StorageItem");
+						App.Logger?.LogWarning(ex, "Error creating ListedItem from StorageItem");
 					}
 				}
 
@@ -342,9 +365,9 @@ namespace Files.App.Utils.Storage
 				var workingFolder = await GetStorageFolderAsync(folder);
 
 				var hiddenOnlyFromWin32 = false;
-				if (workingFolder)
+				if (workingFolder && workingFolder.Result is not null)
 				{
-					await SearchAsync(workingFolder, results, token);
+					await SearchAsync(workingFolder.Result, results, token);
 					hiddenOnlyFromWin32 = (results.Count != 0);
 				}
 
@@ -481,12 +504,23 @@ namespace Files.App.Utils.Storage
 						{
 							_ = FilesystemTasks.Wrap(() => MainWindow.Instance.DispatcherQueue.EnqueueOrInvokeAsync(async () =>
 							{
-								var bitmapImage = await t.Result.ToBitmapAsync();
-								if (bitmapImage is not null)
-									listedItem.FileImage = bitmapImage;
+								try
+								{
+									var bitmapImage = await t.Result.ToBitmapAsync();
+									if (bitmapImage is not null)
+										listedItem.FileImage = bitmapImage;
+								}
+								catch (Exception ex)
+								{
+									App.Logger?.LogWarning(ex, "Failed to convert icon to bitmap for {Path}", listedItem.ItemPath);
+								}
 							}, Microsoft.UI.Dispatching.DispatcherQueuePriority.Low));
 						}
-					});
+						else if (t.IsFaulted)
+						{
+							App.Logger?.LogWarning(t.Exception, "Failed to load icon for {Path}", listedItem.ItemPath);
+						}
+					}, TaskContinuationOptions.ExecuteSynchronously);
 			}
 
 			return listedItem;
@@ -585,16 +619,34 @@ namespace Files.App.Utils.Storage
 			}
 			if (listedItem is not null && MaxItemCount > 0) // Only load icon for searchbox suggestions
 			{
-				var iconResult = await FileThumbnailHelper.GetIconAsync(
-					item.Path,
-					Constants.ShellIconSizes.Small,
-					item.IsOfType(StorageItemTypes.Folder),
-					IconOptions.ReturnIconOnly | IconOptions.UseCurrentScale);
+				try
+				{
+					var iconResult = await FileThumbnailHelper.GetIconAsync(
+						item.Path,
+						Constants.ShellIconSizes.Small,
+						item.IsOfType(StorageItemTypes.Folder),
+						IconOptions.ReturnIconOnly | IconOptions.UseCurrentScale);
 
-				if (iconResult is not null)
-					listedItem.FileImage = await iconResult.ToBitmapAsync();
-				else
+					if (iconResult is not null)
+					{
+						try
+						{
+							listedItem.FileImage = await iconResult.ToBitmapAsync();
+						}
+						catch (Exception ex)
+						{
+							App.Logger?.LogWarning(ex, "Failed to convert icon to bitmap for {Path}", item.Path);
+							listedItem.NeedsPlaceholderGlyph = true;
+						}
+					}
+					else
+						listedItem.NeedsPlaceholderGlyph = true;
+				}
+				catch (Exception ex)
+				{
+					App.Logger?.LogWarning(ex, "Failed to load icon for {Path}", item.Path);
 					listedItem.NeedsPlaceholderGlyph = true;
+				}
 			}
 			return listedItem;
 		}

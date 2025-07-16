@@ -6,6 +6,8 @@ using System.IO;
 using System.Text;
 using Windows.Storage;
 using Windows.Storage.Search;
+using Microsoft.Extensions.Logging;
+using FileAttributes = System.IO.FileAttributes;
 
 namespace Files.App.Utils.Storage
 {
@@ -219,52 +221,96 @@ namespace Files.App.Utils.Storage
 
 		public async static Task<BaseStorageFolder> DangerousGetFolderFromPathAsync
 			(string value, StorageFolderWithPath rootFolder = null, StorageFolderWithPath parentFolder = null)
-				=> (await DangerousGetFolderWithPathFromPathAsync(value, rootFolder, parentFolder)).Item;
+		{
+			try
+			{
+				var result = await DangerousGetFolderWithPathFromPathAsync(value, rootFolder, parentFolder);
+				return result?.Item;
+			}
+			catch (Exception ex)
+			{
+				App.Logger?.LogWarning(ex, "Failed to get folder from path: {Path}", value);
+				return null;
+			}
+		}
 		public async static Task<StorageFolderWithPath> DangerousGetFolderWithPathFromPathAsync
 			(string value, StorageFolderWithPath rootFolder = null, StorageFolderWithPath parentFolder = null)
 		{
-			if (rootFolder is not null)
-			{
-				var currComponents = GetDirectoryPathComponents(value);
+			// Validate input path
+			if (string.IsNullOrWhiteSpace(value))
+				return null;
 
-				if (rootFolder.Path == value)
-				{
-					return rootFolder;
-				}
-				else if (parentFolder is not null && value.IsSubPathOf(parentFolder.Path))
-				{
-					var folder = parentFolder.Item;
-					var prevComponents = GetDirectoryPathComponents(parentFolder.Path);
-					var path = parentFolder.Path;
-					foreach (var component in currComponents.ExceptBy(prevComponents, c => c.Path))
-					{
-						folder = await folder.GetFolderAsync(component.Title);
-						path = PathNormalization.Combine(path, folder.Name);
-					}
-					return new StorageFolderWithPath(folder, path);
-				}
-				else if (value.IsSubPathOf(rootFolder.Path))
-				{
-					var folder = rootFolder.Item;
-					var path = rootFolder.Path;
-					foreach (var component in currComponents.Skip(1))
-					{
-						folder = await folder.GetFolderAsync(component.Title);
-						path = PathNormalization.Combine(path, folder.Name);
-					}
-					return new StorageFolderWithPath(folder, path);
-				}
+			// Check for problematic paths that can cause crashes
+			if (IsProblematicPath(value))
+			{
+				App.Logger?.LogDebug("Skipping problematic path: {Path}", value);
+				return null;
 			}
 
-			var fullPath = (parentFolder is not null && !FtpHelpers.IsFtpPath(value) && !Path.IsPathRooted(value) && !ShellStorageFolder.IsShellPath(value)) // "::{" not a valid root
-				? Path.GetFullPath(Path.Combine(parentFolder.Path, value)) // Relative path
-				: value;
-			var item = await BaseStorageFolder.GetFolderFromPathAsync(fullPath);
+			try
+			{
+				if (rootFolder is not null)
+				{
+					var currComponents = GetDirectoryPathComponents(value);
 
-			if (parentFolder is not null && parentFolder.Item is IPasswordProtectedItem ppis && item is IPasswordProtectedItem ppid)
-				ppid.Credentials = ppis.Credentials;
+					if (rootFolder.Path == value)
+					{
+						return rootFolder;
+					}
+					else if (parentFolder is not null && value.IsSubPathOf(parentFolder.Path))
+					{
+						var folder = parentFolder.Item;
+						var prevComponents = GetDirectoryPathComponents(parentFolder.Path);
+						var path = parentFolder.Path;
+						foreach (var component in currComponents.ExceptBy(prevComponents, c => c.Path))
+						{
+							folder = await folder.GetFolderAsync(component.Title);
+							path = PathNormalization.Combine(path, folder.Name);
+						}
+						return new StorageFolderWithPath(folder, path);
+					}
+					else if (value.IsSubPathOf(rootFolder.Path))
+					{
+						var folder = rootFolder.Item;
+						var path = rootFolder.Path;
+						foreach (var component in currComponents.Skip(1))
+						{
+							folder = await folder.GetFolderAsync(component.Title);
+							path = PathNormalization.Combine(path, folder.Name);
+						}
+						return new StorageFolderWithPath(folder, path);
+					}
+				}
 
-			return new StorageFolderWithPath(item);
+				var fullPath = (parentFolder is not null && !FtpHelpers.IsFtpPath(value) && !Path.IsPathRooted(value) && !ShellStorageFolder.IsShellPath(value)) // "::{" not a valid root
+					? Path.GetFullPath(Path.Combine(parentFolder.Path, value)) // Relative path
+					: value;
+					
+				// Additional path validation before making the dangerous call
+				if (IsProblematicPath(fullPath))
+				{
+					App.Logger?.LogDebug("Skipping problematic full path: {Path}", fullPath);
+					return null;
+				}
+
+				var item = await BaseStorageFolder.GetFolderFromPathAsync(fullPath);
+
+				if (item == null)
+				{
+					// Failed to get folder (access denied, doesn't exist, etc.)
+					return null;
+				}
+
+				if (parentFolder is not null && parentFolder.Item is IPasswordProtectedItem ppis && item is IPasswordProtectedItem ppid)
+					ppid.Credentials = ppis.Credentials;
+
+				return new StorageFolderWithPath(item);
+			}
+			catch (Exception ex)
+			{
+				App.Logger?.LogWarning(ex, "Failed to get folder with path from: {Path}", value);
+				return null;
+			}
 		}
 		public async static Task<IList<StorageFolderWithPath>> GetFoldersWithPathAsync
 			(this StorageFolderWithPath parentFolder, uint maxNumberOfItems = uint.MaxValue)
@@ -431,6 +477,67 @@ namespace Files.App.Utils.Storage
 			path.Append(separator);
 			path.Append(subPath);
 			i = -1;
+		}
+
+		/// <summary>
+		/// Checks if a path is known to cause crashes or should be avoided
+		/// </summary>
+		private static bool IsProblematicPath(string path)
+		{
+			if (string.IsNullOrWhiteSpace(path))
+				return true;
+
+			// Known problematic paths that can cause XAML framework crashes
+			var problematicPaths = new[]
+			{
+				@"\.git",        // Git directories
+				@"\.svn",        // SVN directories  
+				@"\.hg",         // Mercurial directories
+				@"\$Recycle.Bin", // Recycle bin
+				@"\System Volume Information", // System volume info
+				@"\DumpStack.log.tmp", // Crash dump files
+				@"\hiberfil.sys", // Hibernation file
+				@"\pagefile.sys", // Page file
+				@"\swapfile.sys", // Swap file
+				@"\Config.Msi",   // Windows installer temp
+			};
+
+			// Check for problematic path patterns
+			foreach (var problematicPath in problematicPaths)
+			{
+				if (path.Contains(problematicPath, StringComparison.OrdinalIgnoreCase))
+					return true;
+			}
+
+			// Check for system-protected directories
+			try
+			{
+				var directoryInfo = new DirectoryInfo(path);
+				if (directoryInfo.Exists && 
+					(directoryInfo.Attributes.HasFlag(FileAttributes.System) ||
+					 directoryInfo.Attributes.HasFlag(FileAttributes.Hidden)))
+				{
+					// Allow some common hidden directories that are usually safe
+					var safePaths = new[]
+					{
+						@"\AppData\Local",
+						@"\AppData\Roaming", 
+						@"\Application Data",
+						@"\.config",
+						@"\.cache"
+					};
+
+					if (!safePaths.Any(safePath => path.Contains(safePath, StringComparison.OrdinalIgnoreCase)))
+						return true;
+				}
+			}
+			catch
+			{
+				// If we can't check the path attributes, assume it might be problematic
+				return true;
+			}
+
+			return false;
 		}
 	}
 }

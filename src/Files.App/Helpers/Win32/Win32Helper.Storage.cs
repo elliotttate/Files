@@ -399,6 +399,17 @@ namespace Files.App.Helpers
 					return iconData;
 				}
 			}
+			catch (UnauthorizedAccessException)
+			{
+				// Handle system file access errors silently
+				return null;
+			}
+			catch (Exception ex)
+			{
+				// Log other exceptions but don't crash
+				App.Logger?.LogWarning(ex, "Error loading icon for {Path}", path);
+				return null;
+			}
 			finally
 			{
 
