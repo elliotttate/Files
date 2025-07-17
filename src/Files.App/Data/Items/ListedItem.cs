@@ -31,6 +31,52 @@ namespace Files.App.Utils
 
 		protected static IFileModelCacheService cacheService;
 		
+		/// <summary>
+		/// Checks if a path is problematic for thumbnail loading
+		/// </summary>
+		private static bool IsProblematicPath(string path)
+		{
+			if (string.IsNullOrEmpty(path))
+				return true;
+				
+			// Normalize path
+			path = path.Trim().ToUpperInvariant();
+			
+			// Skip drive roots (C:\, D:\, etc.)
+			if (path.Length == 3 && path[1] == ':' && path[2] == '\\')
+				return true;
+				
+			// Skip UNC paths (network paths)
+			if (path.StartsWith("\\\\"))
+				return true;
+				
+			// Skip system directories that often cause access issues
+			string[] problematicPaths = {
+				"C:\\WINDOWS\\SYSTEM32",
+				"C:\\WINDOWS\\SYSWOW64", 
+				"C:\\WINDOWS\\WINSXS",
+				"C:\\SYSTEM VOLUME INFORMATION",
+				"C:\\$RECYCLE.BIN",
+				"C:\\PAGEFILE.SYS",
+				"C:\\HIBERFIL.SYS",
+				"C:\\SWAPFILE.SYS",
+				"C:\\WINDOWS\\TEMP",
+				"C:\\WINDOWS\\PREFETCH"
+			};
+			
+			foreach (var problematicPath in problematicPaths)
+			{
+				if (path.StartsWith(problematicPath))
+					return true;
+			}
+			
+			// Skip hidden system files and temp files
+			if (path.Contains("\\$") || path.Contains("\\~") || path.Contains("\\TEMP\\"))
+				return true;
+				
+			return false;
+		}
+		
 		// Cached values to avoid repeated lookups
 		private BitmapImage _cachedThumbnail;
 		private MediaProperties _cachedMediaProperties;
@@ -229,6 +275,55 @@ namespace Files.App.Utils
 						thumbnailLoaded = true;
 					}
 				}
+				
+				// Check if viewport thumbnail loader is available
+				var viewportLoader = Ioc.Default.GetService<Services.Thumbnails.IViewportThumbnailLoaderService>();
+				bool useViewportLoading = viewportLoader != null && viewportLoader.ActiveLoadCount > 0;
+				
+				// If no cached thumbnail and we should load icons, trigger loading
+				// Skip automatic loading if viewport loader is active
+				if (fileImage == null && LoadFileIcon && !thumbnailLoaded && !isLoadingThumbnail && !useViewportLoading && !string.IsNullOrEmpty(ItemPath))
+				{
+					// Skip problematic paths that might cause COM exceptions
+					if (IsProblematicPath(ItemPath))
+					{
+						System.Diagnostics.Debug.WriteLine($"FileImage getter: Skipping problematic path {ItemPath}");
+						NeedsPlaceholderGlyph = true;
+						thumbnailLoaded = true; // Mark as loaded to prevent retries
+						return fileImage;
+					}
+					
+					// Set loading flag to prevent reentrancy
+					isLoadingThumbnail = true;
+					
+					System.Diagnostics.Debug.WriteLine($"FileImage getter: Triggering thumbnail load for {ItemPath}");
+					_ = Task.Run(async () =>
+					{
+						try
+						{
+							await LoadThumbnailAsync(Constants.ShellIconSizes.Small);
+						}
+						catch (System.Runtime.InteropServices.COMException ex) when (ex.HResult == unchecked((int)0x80070490))
+						{
+							// Element not found (0x80070490) - skip this path
+							System.Diagnostics.Debug.WriteLine($"FileImage getter: COM Exception (Element not found) for {ItemPath}: {ex.Message}");
+							NeedsPlaceholderGlyph = true;
+							thumbnailLoaded = true;
+						}
+						catch (Exception ex)
+						{
+							System.Diagnostics.Debug.WriteLine($"FileImage getter: Failed to load thumbnail for {ItemPath}: {ex.Message}");
+							NeedsPlaceholderGlyph = true;
+							thumbnailLoaded = true;
+						}
+						finally
+						{
+							// Clear loading flag when done
+							isLoadingThumbnail = false;
+						}
+					});
+				}
+				
 				return fileImage;
 			}
 			set
@@ -240,6 +335,7 @@ namespace Files.App.Utils
 						LoadFileIcon = true;
 						NeedsPlaceholderGlyph = false;
 						_hasCheckedCache = true; // No need to check cache again
+						thumbnailLoaded = true; // Mark as loaded when thumbnail is set
 						
 						// Add to cache if cache service is available
 						if (cacheService != null && !string.IsNullOrEmpty(ItemPath))
@@ -562,6 +658,13 @@ namespace Files.App.Utils
 			set => Interlocked.Exchange(ref _thumbnailLoaded, value ? 1 : 0);
 		}
 
+		private volatile int _isLoadingThumbnail = 0;
+		private bool isLoadingThumbnail
+		{
+			get => _isLoadingThumbnail == 1;
+			set => Interlocked.Exchange(ref _isLoadingThumbnail, value ? 1 : 0);
+		}
+
 		private BaseStorageFile itemFile;
 		public BaseStorageFile ItemFile
 		{
@@ -620,7 +723,21 @@ namespace Files.App.Utils
 			System.Diagnostics.Debug.WriteLine($"LoadThumbnailAsync called for: {ItemPath}, loaded: {thumbnailLoaded}, cacheService: {cacheService != null}");
 			
 			if (thumbnailLoaded || string.IsNullOrEmpty(ItemPath))
+			{
+				// Clear loading flag if already loaded
+				isLoadingThumbnail = false;
 				return;
+			}
+
+			// Skip problematic paths that might cause COM exceptions
+			if (IsProblematicPath(ItemPath))
+			{
+				System.Diagnostics.Debug.WriteLine($"LoadThumbnailAsync: Skipping problematic path {ItemPath}");
+				NeedsPlaceholderGlyph = true;
+				thumbnailLoaded = true;
+				isLoadingThumbnail = false;
+				return;
+			}
 
 			try
 			{
@@ -636,13 +753,15 @@ namespace Files.App.Utils
 						LoadFileIcon = true;
 						NeedsPlaceholderGlyph = false;
 						thumbnailLoaded = true;
+						isLoadingThumbnail = false;
 						return;
 					}
 
 					// Queue for loading
 					System.Diagnostics.Debug.WriteLine($"Queueing thumbnail load for: {ItemPath}");
-					await cacheService.QueueThumbnailLoadAsync(ItemPath, this, thumbnailSize, cancellationToken);
-					thumbnailLoaded = true;
+					await cacheService.QueueThumbnailLoadAsync(ItemPath, this, thumbnailSize, cancellationToken, false);
+					// Don't set thumbnailLoaded = true here! The cache service will update FileImage when ready
+					isLoadingThumbnail = false;
 				}
 				else
 				{
@@ -652,20 +771,34 @@ namespace Files.App.Utils
 					
 					if (iconData != null && iconData.Length > 0)
 					{
-						using var ms = new MemoryStream(iconData);
-						var image = new BitmapImage();
-						await image.SetSourceAsync(ms.AsRandomAccessStream());
-						FileImage = image;
-						LoadFileIcon = true;
-						NeedsPlaceholderGlyph = false;
+						// Use thread-safe ToBitmapAsync method to avoid reentrancy issues
+						var image = await iconData.ToBitmapAsync();
+						if (image != null)
+						{
+							FileImage = image;
+							LoadFileIcon = true;
+							NeedsPlaceholderGlyph = false;
+						}
 					}
 					
 					thumbnailLoaded = true;
+					isLoadingThumbnail = false;
 				}
+			}
+			catch (System.Runtime.InteropServices.COMException ex) when (ex.HResult == unchecked((int)0x80070490))
+			{
+				// Element not found (0x80070490) - skip this path
+				System.Diagnostics.Debug.WriteLine($"COM Exception (Element not found) for {ItemPath}: {ex.Message}");
+				NeedsPlaceholderGlyph = true;
+				thumbnailLoaded = true;
+				isLoadingThumbnail = false;
 			}
 			catch (Exception ex)
 			{
 				System.Diagnostics.Debug.WriteLine($"Failed to load thumbnail for {ItemPath}: {ex.Message}");
+				NeedsPlaceholderGlyph = true;
+				thumbnailLoaded = true;
+				isLoadingThumbnail = false;
 			}
 		}
 	}

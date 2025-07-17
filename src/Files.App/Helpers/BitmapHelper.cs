@@ -1,6 +1,7 @@
 // Copyright (c) Files Community
 // Licensed under the MIT License.
 
+using Microsoft.Extensions.Logging;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media.Imaging;
 using System.IO;
@@ -17,24 +18,70 @@ namespace Files.App.Helpers
 		{
 			if (data is null)
 			{
+				App.Logger?.LogInformation("ToBitmapAsync: data is null");
 				return null;
 			}
 
+			App.Logger?.LogInformation("ToBitmapAsync: Converting {ByteCount} bytes to BitmapImage, decodeSize={DecodeSize}", data.Length, decodeSize);
+
 			try
 			{
-				using var ms = new MemoryStream(data);
-				var image = new BitmapImage();
-				if (decodeSize > 0)
+				// Check if we're already on the UI thread
+				if (MainWindow.Instance.DispatcherQueue.HasThreadAccess)
 				{
-					image.DecodePixelWidth = decodeSize;
-					image.DecodePixelHeight = decodeSize;
+					// We're on UI thread, create directly
+					try
+					{
+						using var ms = new MemoryStream(data);
+						var image = new BitmapImage();
+						if (decodeSize > 0)
+						{
+							image.DecodePixelWidth = decodeSize;
+							image.DecodePixelHeight = decodeSize;
+						}
+						image.DecodePixelType = DecodePixelType.Logical;
+						await image.SetSourceAsync(ms.AsRandomAccessStream());
+						App.Logger?.LogInformation("ToBitmapAsync: Successfully created BitmapImage {Width}x{Height}", image.PixelWidth, image.PixelHeight);
+						return image;
+					}
+					catch (Exception ex)
+					{
+						App.Logger?.LogError(ex, "ToBitmapAsync: Failed to create BitmapImage on UI thread, data length: {Length}", data.Length);
+						return null;
+					}
 				}
-				image.DecodePixelType = DecodePixelType.Logical;
-				await image.SetSourceAsync(ms.AsRandomAccessStream());
-				return image;
+				else
+				{
+					// We're on a background thread, dispatch to UI thread
+					var tcs = new TaskCompletionSource<BitmapImage?>();
+					MainWindow.Instance.DispatcherQueue.TryEnqueue(async () =>
+					{
+						try
+						{
+							using var ms = new MemoryStream(data);
+							var image = new BitmapImage();
+							if (decodeSize > 0)
+							{
+								image.DecodePixelWidth = decodeSize;
+								image.DecodePixelHeight = decodeSize;
+							}
+							image.DecodePixelType = DecodePixelType.Logical;
+							await image.SetSourceAsync(ms.AsRandomAccessStream());
+							App.Logger?.LogInformation("ToBitmapAsync: Successfully created BitmapImage {Width}x{Height}", image.PixelWidth, image.PixelHeight);
+							tcs.SetResult(image);
+						}
+						catch (Exception ex)
+						{
+							App.Logger?.LogError(ex, "ToBitmapAsync: Failed to create BitmapImage on UI thread, data length: {Length}", data.Length);
+							tcs.SetResult(null);
+						}
+					});
+					return await tcs.Task;
+				}
 			}
-			catch (Exception)
+			catch (Exception ex)
 			{
+				App.Logger?.LogError(ex, "ToBitmapAsync: Failed to dispatch to UI thread");
 				return null;
 			}
 		}

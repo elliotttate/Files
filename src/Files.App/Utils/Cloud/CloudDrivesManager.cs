@@ -36,6 +36,13 @@ namespace Files.App.Utils.Cloud
 
 			foreach (var provider in providers)
 			{
+				// Skip cloud providers mapped to paths inside Git folders
+				if (IsPathInsideGitFolder(provider.SyncFolder))
+				{
+					_logger?.LogWarning($"Skipping cloud provider \"{provider.Name}\" - path inside Git folder: {provider.SyncFolder}");
+					continue;
+				}
+				
 				_logger?.LogInformation($"Adding cloud provider \"{provider.Name}\" mapped to {provider.SyncFolder}");
 
 				var cloudProviderItem = new DriveItem()
@@ -106,6 +113,48 @@ namespace Files.App.Utils.Cloud
 					new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Add, cloudProviderItem)
 				);
 			}
+		}
+		
+		private static bool IsPathInsideGitFolder(string path)
+		{
+			if (string.IsNullOrEmpty(path))
+				return false;
+				
+			try
+			{
+				// Check if path contains .git or other version control folders
+				var pathParts = path.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+				foreach (var part in pathParts)
+				{
+					if (part.Equals(".git", StringComparison.OrdinalIgnoreCase) ||
+					    part.Equals(".github", StringComparison.OrdinalIgnoreCase) ||
+					    part.Equals(".svn", StringComparison.OrdinalIgnoreCase) ||
+					    part.Equals(".hg", StringComparison.OrdinalIgnoreCase) ||
+					    part.Equals(".bzr", StringComparison.OrdinalIgnoreCase) ||
+					    part.EndsWith(".git", StringComparison.OrdinalIgnoreCase))
+					{
+						return true;
+					}
+				}
+				
+				// Also check parent directories
+				var directory = new DirectoryInfo(path);
+				while (directory != null)
+				{
+					if (directory.Name.Equals(".git", StringComparison.OrdinalIgnoreCase) ||
+					    directory.Name.EndsWith(".git", StringComparison.OrdinalIgnoreCase))
+					{
+						return true;
+					}
+					directory = directory.Parent;
+				}
+			}
+			catch (Exception ex)
+			{
+				_logger?.LogWarning(ex, "Error checking if path is inside Git folder: {Path}", path);
+			}
+			
+			return false;
 		}
 	}
 }

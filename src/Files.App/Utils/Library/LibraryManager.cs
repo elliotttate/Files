@@ -197,7 +197,19 @@ namespace Files.App.Utils.Library
 							}
 							var foldersToAdd = folders.Distinct(StringComparer.OrdinalIgnoreCase)
 													  .Where(folderPath => !library.Folders.Any(f => string.Equals(folderPath, f.FileSystemPath, StringComparison.OrdinalIgnoreCase)))
-													  .Select(ShellItem.Open);
+													  .Select(folderPath => 
+													  {
+														  try
+														  {
+															  return ShellItem.Open(folderPath);
+														  }
+														  catch (System.Runtime.InteropServices.COMException ex) when (ex.HResult == unchecked((int)0x80070490))
+														  {
+															  // Element not found - skip this folder
+															  return null;
+														  }
+													  })
+													  .Where(item => item != null);
 							foreach (var toAdd in foldersToAdd)
 							{
 								library.Folders.Add(toAdd);
@@ -211,8 +223,15 @@ namespace Files.App.Utils.Library
 					}
 					if (defaultSaveFolder is not null)
 					{
-						library.DefaultSaveFolder = ShellItem.Open(defaultSaveFolder);
-						updated = true;
+						try
+						{
+							library.DefaultSaveFolder = ShellItem.Open(defaultSaveFolder);
+							updated = true;
+						}
+						catch (System.Runtime.InteropServices.COMException ex) when (ex.HResult == unchecked((int)0x80070490))
+						{
+							// Element not found - skip setting default save folder
+						}
 					}
 					if (isPinned is not null)
 					{

@@ -4,8 +4,10 @@
 using CommunityToolkit.WinUI;
 using Files.App.Controls;
 using Files.App.Helpers.ContextFlyouts;
+using Files.App.Services.Thumbnails;
 using Files.App.UserControls.Menus;
 using Files.App.ViewModels.Layouts;
+using Microsoft.Extensions.Logging;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
@@ -44,6 +46,7 @@ namespace Files.App.Views.Layouts
 		public InfoPaneViewModel InfoPaneViewModel { get; } = Ioc.Default.GetRequiredService<InfoPaneViewModel>();
 		protected readonly IWindowContext WindowContext = Ioc.Default.GetRequiredService<IWindowContext>();
 		protected readonly IStorageTrashBinService StorageTrashBinService = Ioc.Default.GetRequiredService<IStorageTrashBinService>();
+		protected readonly IViewportThumbnailLoaderService? ViewportThumbnailLoader = Ioc.Default.GetService<IViewportThumbnailLoaderService>();
 
 		// ViewModels
 
@@ -71,8 +74,18 @@ namespace Files.App.Views.Layouts
 		private bool itemDragging;
 
 		private ListedItem? dragOverItem = null;
+		
+		// Viewport tracking for thumbnail loading
+		private readonly HashSet<ListedItem> visibleItems = new();
+		private readonly DispatcherQueueTimer viewportUpdateTimer;
+		private CancellationTokenSource viewportCancellationTokenSource = new();
 		private ListedItem? hoveredItem = null;
 		private ListedItem? preRenamingItem = null;
+		
+		// Scroll velocity tracking
+		private DateTime lastScrollTime = DateTime.UtcNow;
+		private int scrollEventCount = 0;
+		private readonly DispatcherQueueTimer scrollVelocityTimer;
 
 		// Properties
 
@@ -307,6 +320,19 @@ namespace Files.App.Views.Layouts
 			dragOverTimer = DispatcherQueue.CreateTimer();
 			tapDebounceTimer = DispatcherQueue.CreateTimer();
 			hoverTimer = DispatcherQueue.CreateTimer();
+			
+			// Initialize viewport update timer
+			viewportUpdateTimer = DispatcherQueue.CreateTimer();
+			viewportUpdateTimer.Interval = TimeSpan.FromMilliseconds(200); // Increased interval for safety
+			viewportUpdateTimer.Tick += ViewportUpdateTimer_Tick;
+			
+			// Initialize scroll velocity timer
+			scrollVelocityTimer = DispatcherQueue.CreateTimer();
+			scrollVelocityTimer.Interval = TimeSpan.FromSeconds(1);
+			scrollVelocityTimer.Tick += ScrollVelocityTimer_Tick;
+			scrollVelocityTimer.Start();
+			
+			App.Logger?.LogInformation("BaseLayoutPage constructed, viewport timer interval: {Interval}ms", 200);
 		}
 
 		// Abstract methods
@@ -315,6 +341,68 @@ namespace Files.App.Views.Layouts
 		protected abstract void UnhookEvents();
 		protected abstract void InitializeCommandsViewModel();
 		protected abstract bool CanGetItemFromElement(object element);
+		
+		// Viewport tracking methods
+		protected virtual void OnItemCameIntoView(ListedItem item)
+		{
+			if (item == null) return;
+			
+			if (visibleItems.Add(item))
+			{
+				// Start viewport update timer (calling Start() on running timer is safe)
+				viewportUpdateTimer.Start();
+			}
+		}
+		
+		protected virtual void OnItemWentOutOfView(ListedItem item)
+		{
+			if (item == null) return;
+			
+			visibleItems.Remove(item);
+		}
+		
+		protected virtual void OnScrollChanged()
+		{
+			// Track scroll velocity
+			scrollEventCount++;
+			
+			// Debounce viewport updates during rapid scrolling
+			viewportUpdateTimer.Stop();
+			viewportUpdateTimer.Start();
+		}
+		
+		/// <summary>
+		/// Handles container content changing events to track visible items for viewport thumbnail loading
+		/// </summary>
+		/// <param name="sender">The container</param>
+		/// <param name="args">Container content changing event args</param>
+		protected virtual void FileList_ContainerContentChanging(object sender, ContainerContentChangingEventArgs args)
+		{
+			try
+			{
+				if (args.InRecycleQueue)
+				{
+					// Item is being recycled (going out of view)
+					if (args.Item is ListedItem item)
+					{
+						OnItemWentOutOfView(item);
+					}
+				}
+				else
+				{
+					// Item is being realized (coming into view)
+					if (args.Item is ListedItem item)
+					{
+						OnItemCameIntoView(item);
+					}
+				}
+			}
+			catch (Exception ex)
+			{
+				// Don't let viewport tracking crash the app
+				App.Logger?.LogDebug(ex, "Error in FileList_ContainerContentChanging");
+			}
+		}
 
 		// Methods
 
@@ -332,6 +420,77 @@ namespace Files.App.Views.Layouts
 		{
 			jumpString = string.Empty;
 			jumpTimer.Stop();
+		}
+		
+		private void ScrollVelocityTimer_Tick(object sender, object e)
+		{
+			if (scrollEventCount > 0)
+			{
+				var velocity = scrollEventCount;
+				App.Logger?.LogInformation("Scroll velocity: {ScrollEventsPerSecond} events/sec", velocity);
+				
+				// Warn if scrolling is very fast
+				if (velocity > 50)
+				{
+					App.Logger?.LogWarning("Very high scroll velocity detected: {ScrollEventsPerSecond} events/sec", velocity);
+				}
+			}
+			
+			scrollEventCount = 0;
+		}
+		
+		private void ViewportUpdateTimer_Tick(object sender, object e)
+		{
+			var updateId = Guid.NewGuid().ToString().Substring(0, 8);
+			App.Logger?.LogInformation("[{UpdateId}] ViewportUpdateTimer_Tick started, visible items: {Count}", updateId, visibleItems.Count);
+			
+			viewportUpdateTimer.Stop();
+			
+			if (visibleItems.Count == 0)
+			{
+				App.Logger?.LogDebug("[{UpdateId}] ViewportUpdateTimer_Tick skipped - no visible items", updateId);
+				return;
+			}
+			
+			// Update viewport on background thread to completely avoid UI thread reentrancy
+			Task.Run(async () =>
+			{
+				try
+				{
+					App.Logger?.LogDebug("[{UpdateId}] Viewport update task started on background thread", updateId);
+					
+					// Cancel previous viewport update
+					viewportCancellationTokenSource.Cancel();
+					viewportCancellationTokenSource = new CancellationTokenSource();
+					
+					// Create a snapshot of visible items
+					var visibleItemsCopy = visibleItems.ToList();
+					App.Logger?.LogDebug("[{UpdateId}] Created snapshot of {Count} visible items", updateId, visibleItemsCopy.Count);
+					
+					// Update viewport thumbnail loader if available
+					if (ViewportThumbnailLoader != null)
+					{
+						await ViewportThumbnailLoader.UpdateViewportAsync(
+							visibleItemsCopy, 
+							Constants.ShellIconSizes.Small,
+							viewportCancellationTokenSource.Token);
+					}
+					
+					// Also update the ShellViewModel's viewport
+					await UpdateShellViewportAsync(viewportCancellationTokenSource.Token);
+					
+					App.Logger?.LogDebug("[{UpdateId}] Viewport update completed successfully", updateId);
+				}
+				catch (OperationCanceledException)
+				{
+					// Expected when viewport is updated rapidly
+					App.Logger?.LogDebug("[{UpdateId}] Viewport update cancelled (expected during rapid scrolling)", updateId);
+				}
+				catch (Exception ex)
+				{
+					App.Logger?.LogWarning(ex, "[{UpdateId}] Failed to update viewport thumbnails", updateId);
+				}
+			});
 		}
 
 		protected IEnumerable<ListedItem>? GetAllItems()
@@ -573,9 +732,53 @@ namespace Files.App.Views.Layouts
 			ItemContextMenuFlyout.Opening -= ItemContextFlyout_Opening;
 			BaseContextMenuFlyout.Opening -= BaseContextFlyout_Opening;
 
+			// Clear viewport tracking
+			ClearViewportTracking();
+
 			var parameter = e.Parameter as NavigationArguments;
 			if (parameter is not null && !parameter.IsLayoutSwitch)
 				ParentShellPageInstance!.ShellViewModel.CancelLoadAndClearFiles();
+		}
+		
+		/// <summary>
+		/// Clears viewport tracking state
+		/// </summary>
+		protected virtual void ClearViewportTracking()
+		{
+			visibleItems.Clear();
+			viewportUpdateTimer.Stop();
+			viewportCancellationTokenSource.Cancel();
+			viewportCancellationTokenSource = new CancellationTokenSource();
+		}
+		
+		/// <summary>
+		/// Handles scroll events to track viewport changes
+		/// </summary>
+		/// <param name="sender">The scroll viewer</param>
+		/// <param name="e">Scroll event args</param>
+		protected virtual void ContentScroller_ViewChanged(object sender, ScrollViewerViewChangedEventArgs e)
+		{
+			OnScrollChanged();
+		}
+		
+		/// <summary>
+		/// Updates the ShellViewModel's viewport with the currently visible items
+		/// </summary>
+		/// <param name="cancellationToken">Cancellation token</param>
+		protected async Task UpdateShellViewportAsync(CancellationToken cancellationToken = default)
+		{
+			try
+			{
+				if (ParentShellPageInstance?.ShellViewModel != null && visibleItems.Count > 0)
+				{
+					var visibleItemsList = visibleItems.ToList();
+					await ParentShellPageInstance.ShellViewModel.UpdateViewportAsync(visibleItemsList, cancellationToken);
+				}
+			}
+			catch (Exception ex)
+			{
+				App.Logger?.LogDebug(ex, "Error updating shell viewport");
+			}
 		}
 
 		private async void ItemContextFlyout_Opening(object? sender, object e)
@@ -1190,6 +1393,36 @@ namespace Files.App.Views.Layouts
 			// Set can window to front (#13255)
 			itemDragging = false;
 			MainWindow.Instance.SetCanWindowToFront(true);
+			
+			// Track visible items for viewport-based thumbnail loading
+			if (ViewportThumbnailLoader != null && args.Item is ListedItem listedItem)
+			{
+				var scrollId = Guid.NewGuid().ToString().Substring(0, 8);
+				
+				// Track scroll velocity
+				scrollEventCount++;
+				lastScrollTime = DateTime.UtcNow;
+				
+				if (!args.InRecycleQueue)
+				{
+					// Item is becoming visible
+					visibleItems.Add(listedItem);
+					App.Logger?.LogDebug("[{ScrollId}] Item became visible: {Path}, Total visible: {Count}", 
+						scrollId, listedItem.ItemPath, visibleItems.Count);
+					
+					// Restart viewport update timer (with safety delay)
+					viewportUpdateTimer.Stop();
+					viewportUpdateTimer.Start();
+					App.Logger?.LogDebug("[{ScrollId}] Viewport timer restarted", scrollId);
+				}
+				else
+				{
+					// Item is going out of view
+					visibleItems.Remove(listedItem);
+					App.Logger?.LogDebug("[{ScrollId}] Item left viewport: {Path}, Total visible: {Count}", 
+						scrollId, listedItem.ItemPath, visibleItems.Count);
+				}
+			}
 		}
 
 		private void RefreshContainer(SelectorItem container, bool inRecycleQueue)
@@ -1394,8 +1627,26 @@ namespace Files.App.Views.Layouts
 
 		public virtual void Dispose()
 		{
-			InfoPaneViewModel?.Dispose();
-			UnhookBaseEvents();
+			try
+			{
+				App.Logger?.LogInformation("BaseLayoutPage.Dispose started");
+				
+				// Clean up viewport tracking
+				viewportUpdateTimer?.Stop();
+				scrollVelocityTimer?.Stop();
+				viewportCancellationTokenSource?.Cancel();
+				ViewportThumbnailLoader?.ClearViewport();
+				visibleItems.Clear();
+				
+				InfoPaneViewModel?.Dispose();
+				UnhookBaseEvents();
+				
+				App.Logger?.LogInformation("BaseLayoutPage.Dispose completed successfully");
+			}
+			catch (Exception ex)
+			{
+				App.Logger?.LogError(ex, "Error during BaseLayoutPage.Dispose");
+			}
 		}
 
 		protected void ItemsLayout_DragOver(object sender, DragEventArgs e)

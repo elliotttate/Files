@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 using CommunityToolkit.WinUI;
+using Microsoft.Extensions.Logging;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
@@ -180,9 +181,32 @@ namespace Files.App.Views.Shells
 			this.FindAscendant<ColumnsLayoutPage>()?.NavigateUp();
 		}
 
-		public override void NavigateToPath(string navigationPath, Type sourcePageType, NavigationArguments navArgs = null)
+		public override async void NavigateToPath(string navigationPath, Type sourcePageType, NavigationArguments navArgs = null)
 		{
-			this.FindAscendant<ColumnsLayoutPage>()?.SetSelectedPathOrNavigate(navigationPath, sourcePageType, navArgs);
+			// Navigation throttling to prevent reentrancy crashes
+			var timeSinceLastNav = (DateTime.UtcNow - _lastNavigationTime).TotalMilliseconds;
+			if (timeSinceLastNav < NavigationThrottleMs)
+			{
+				App.Logger?.LogInformation($"Navigation throttled in ColumnShellPage. Time since last: {timeSinceLastNav}ms");
+				return;
+			}
+
+			// Try to acquire navigation lock
+			if (!await _navigationSemaphore.WaitAsync(0))
+			{
+				App.Logger?.LogInformation("Navigation blocked in ColumnShellPage - another navigation in progress");
+				return;
+			}
+
+			try
+			{
+				_lastNavigationTime = DateTime.UtcNow;
+				this.FindAscendant<ColumnsLayoutPage>()?.SetSelectedPathOrNavigate(navigationPath, sourcePageType, navArgs);
+			}
+			finally
+			{
+				_navigationSemaphore.Release();
+			}
 		}
 
 		public override void NavigateHome()

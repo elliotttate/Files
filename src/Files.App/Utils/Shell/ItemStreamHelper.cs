@@ -3,6 +3,7 @@
 
 using System.Runtime.InteropServices;
 using Windows.Win32.System.Com;
+using Vanara.PInvoke;
 
 namespace Files.App.Utils.Shell
 {
@@ -24,7 +25,7 @@ namespace Files.App.Utils.Shell
 		{
 			var hr = Win32PInvoke.SHCreateStreamOnFileEx(
 				path,
-				STGM.STGM_READ | STGM.STGM_FAILIFTHERE | STGM.STGM_SHARE_DENY_NONE,
+				Vanara.PInvoke.STGM.STGM_READ | Vanara.PInvoke.STGM.STGM_FAILIFTHERE | Vanara.PInvoke.STGM.STGM_SHARE_DENY_NONE,
 				0, 0,
 				IntPtr.Zero, out var pstm);
 

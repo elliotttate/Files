@@ -9,8 +9,11 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Imaging;
 using Microsoft.UI.Xaml.Navigation;
+using System.IO;
 using Windows.AI.Actions.Hosting;
+using Windows.Storage.Streams;
 using Windows.System;
 using Windows.UI.Core;
 
@@ -381,7 +384,17 @@ namespace Files.App.UserControls
 					e.Flyout.Items.Add(flyoutItem);
 
 					windowsStorable.TryGetThumbnail((int)(16f * App.AppModel.AppWindowDPI), Windows.Win32.UI.Shell.SIIGBF.SIIGBF_ICONONLY, out var thumbnailData);
-					flyoutItem.Icon = new ImageIcon() { Source = await MainWindow.Instance.DispatcherQueue.EnqueueOrInvokeAsync(() => thumbnailData.ToBitmapAsync(), Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal) };
+					flyoutItem.Icon = new ImageIcon() { Source = await MainWindow.Instance.DispatcherQueue.EnqueueOrInvokeAsync(async () => 
+					{
+						if (thumbnailData != null && thumbnailData.Length > 0)
+						{
+							using var ms = new MemoryStream(thumbnailData);
+							var image = new BitmapImage();
+							await image.SetSourceAsync(ms.AsRandomAccessStream());
+							return image;
+						}
+						return null;
+					}, Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal) };
 
 					windowsStorable.Dispose();
 
@@ -409,7 +422,17 @@ namespace Files.App.UserControls
 					e.Flyout.Items.Add(flyoutItem);
 
 					windowsStorable.TryGetThumbnail((int)(16f * App.AppModel.AppWindowDPI), Windows.Win32.UI.Shell.SIIGBF.SIIGBF_ICONONLY, out var thumbnailData);
-					flyoutItem.Icon = new ImageIcon() { Source = await MainWindow.Instance.DispatcherQueue.EnqueueOrInvokeAsync(() => thumbnailData.ToBitmapAsync(), Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal) };
+					flyoutItem.Icon = new ImageIcon() { Source = await MainWindow.Instance.DispatcherQueue.EnqueueOrInvokeAsync(async () => 
+					{
+						if (thumbnailData != null && thumbnailData.Length > 0)
+						{
+							using var ms = new MemoryStream(thumbnailData);
+							var image = new BitmapImage();
+							await image.SetSourceAsync(ms.AsRandomAccessStream());
+							return image;
+						}
+						return null;
+					}, Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal) };
 
 					windowsStorable.Dispose();
 

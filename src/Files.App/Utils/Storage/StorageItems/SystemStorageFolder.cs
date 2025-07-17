@@ -325,6 +325,13 @@ public sealed partial class SystemStorageFolder : BaseStorageFolder
 					App.Logger?.LogInformation("Skipping Git-related path that may cause COM exception {Path}", path);
 					return null;
 				}
+				
+				// Also skip paths ending with .git (bare repositories)
+				if (path.EndsWith(".git", StringComparison.OrdinalIgnoreCase))
+				{
+					App.Logger?.LogInformation("Skipping bare Git repository that may cause COM exception {Path}", path);
+					return null;
+				}
 
 				StorageFolder? folder;
 				try

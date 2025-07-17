@@ -4,6 +4,7 @@
 using Files.App.Services.Caching;
 using Files.App.Services.SizeProvider;
 using Files.Shared.Helpers;
+using Microsoft.Extensions.Logging;
 using System.IO;
 using Windows.Storage;
 using static Files.App.Helpers.Win32Helper;
@@ -44,7 +45,12 @@ namespace Files.App.Utils.Storage
 			"$Recycle.Bin",
 			"$RECYCLE.BIN",
 			"Config.Msi",
-			"Recovery"
+			"Recovery",
+			".git",         // Git repository folder
+			".github",      // GitHub metadata folder
+			".svn",         // Subversion folder
+			".hg",          // Mercurial folder
+			".bzr"          // Bazaar folder
 		};
 
 		public static async Task<List<ListedItem>> ListEntries(
@@ -121,6 +127,14 @@ namespace Files.App.Utils.Storage
 							// Skip problematic system directories
 							if (ProblematicDirectories.Contains(findData.cFileName))
 							{
+								App.Logger?.LogInformation("Skipping problematic directory: {DirectoryName}", findData.cFileName);
+								continue;
+							}
+							
+							// Also skip any directory ending with .git (bare repositories)
+							if (findData.cFileName.EndsWith(".git", StringComparison.OrdinalIgnoreCase))
+							{
+								App.Logger?.LogInformation("Skipping bare Git repository: {DirectoryName}", findData.cFileName);
 								continue;
 							}
 							

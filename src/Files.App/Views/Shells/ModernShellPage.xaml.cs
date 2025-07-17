@@ -1,6 +1,7 @@
 // Copyright (c) Files Community
 // Licensed under the MIT License.
 
+using Microsoft.Extensions.Logging;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media.Animation;
@@ -33,10 +34,31 @@ namespace Files.App.Views.Shells
 			}
 		}
 
-		public ModernShellPage() : base(new CurrentInstanceViewModel())
+		private static CurrentInstanceViewModel CreateCurrentInstanceViewModel()
 		{
-			InitializeComponent();
+			System.Diagnostics.Debug.WriteLine("Creating CurrentInstanceViewModel");
+			try
+			{
+				var instanceViewModel = new CurrentInstanceViewModel();
+				System.Diagnostics.Debug.WriteLine("CurrentInstanceViewModel created successfully");
+				return instanceViewModel;
+			}
+			catch (Exception ex)
+			{
+				System.Diagnostics.Debug.WriteLine($"Error creating CurrentInstanceViewModel: {ex.Message}");
+				throw;
+			}
+		}
 
+		public ModernShellPage() : base(CreateCurrentInstanceViewModel())
+		{
+			System.Diagnostics.Debug.WriteLine("ModernShellPage constructor started");
+			InitializeComponent();
+			System.Diagnostics.Debug.WriteLine("InitializeComponent completed");
+
+			System.Diagnostics.Debug.WriteLine("About to create ShellViewModel");
+			System.Diagnostics.Debug.WriteLine($"InstanceViewModel is null: {InstanceViewModel == null}");
+			System.Diagnostics.Debug.WriteLine($"InstanceViewModel.FolderSettings is null: {InstanceViewModel?.FolderSettings == null}");
 			ShellViewModel = new ShellViewModel(InstanceViewModel.FolderSettings);
 			ShellViewModel.WorkingDirectoryModified += ViewModel_WorkingDirectoryModified;
 			ShellViewModel.ItemLoadStatusChanged += FilesystemViewModel_ItemLoadStatusChanged;
@@ -306,22 +328,40 @@ namespace Files.App.Views.Shells
 				new SuppressNavigationTransitionInfo());
 		}
 
-		public override void NavigateToPath(string? navigationPath, Type? sourcePageType, NavigationArguments? navArgs = null)
+		public override async void NavigateToPath(string? navigationPath, Type? sourcePageType, NavigationArguments? navArgs = null)
 		{
-			ShellViewModel.FilesAndFoldersFilter = null;
-
-			if (sourcePageType is null && !string.IsNullOrEmpty(navigationPath))
-				sourcePageType = InstanceViewModel.FolderSettings.GetLayoutType(navigationPath);
-
-			if (navArgs is not null && navArgs.AssociatedTabInstance is not null)
+			// Navigation throttling to prevent reentrancy crashes
+			var timeSinceLastNav = (DateTime.UtcNow - _lastNavigationTime).TotalMilliseconds;
+			if (timeSinceLastNav < NavigationThrottleMs)
 			{
-				ItemDisplayFrame.Navigate(
-					sourcePageType,
-					navArgs,
-					new SuppressNavigationTransitionInfo());
+				App.Logger?.LogInformation($"Navigation throttled. Time since last: {timeSinceLastNav}ms");
+				return;
 			}
-			else
+
+			// Try to acquire navigation lock
+			if (!await _navigationSemaphore.WaitAsync(0))
 			{
+				App.Logger?.LogInformation("Navigation blocked - another navigation in progress");
+				return;
+			}
+
+			try
+			{
+				_lastNavigationTime = DateTime.UtcNow;
+				ShellViewModel.FilesAndFoldersFilter = null;
+
+				if (sourcePageType is null && !string.IsNullOrEmpty(navigationPath))
+					sourcePageType = InstanceViewModel.FolderSettings.GetLayoutType(navigationPath);
+
+				if (navArgs is not null && navArgs.AssociatedTabInstance is not null)
+				{
+					ItemDisplayFrame.Navigate(
+						sourcePageType,
+						navArgs,
+						new SuppressNavigationTransitionInfo());
+				}
+				else
+				{
 				if ((string.IsNullOrEmpty(navigationPath) ||
 					string.IsNullOrEmpty(ShellViewModel?.WorkingDirectory) ||
 					navigationPath.TrimEnd(Path.DirectorySeparatorChar).Equals(
@@ -350,7 +390,12 @@ namespace Files.App.Views.Shells
 					new SuppressNavigationTransitionInfo());
 			}
 
-			ToolbarViewModel.PathControlDisplayText = ShellViewModel.WorkingDirectory;
+				ToolbarViewModel.PathControlDisplayText = ShellViewModel.WorkingDirectory;
+			}
+			finally
+			{
+				_navigationSemaphore.Release();
+			}
 		}
 	}
 }

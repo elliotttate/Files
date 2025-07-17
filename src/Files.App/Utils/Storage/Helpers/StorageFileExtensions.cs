@@ -1,6 +1,7 @@
 // Copyright (c) Files Community
 // Licensed under the MIT License.
 
+using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using System.IO;
 using System.Text;
@@ -15,6 +16,12 @@ namespace Files.App.Utils.Storage
 	{
 		private const int SINGLE_DOT_DIRECTORY_LENGTH = 2;
 		private const int DOUBLE_DOT_DIRECTORY_LENGTH = 3;
+		
+		// Thread-safe dictionary to track active folder access operations
+		private static readonly ConcurrentDictionary<string, SemaphoreSlim> folderAccessSemaphores = new();
+		
+		// Global semaphore to limit concurrent folder access operations
+		private static readonly SemaphoreSlim globalFolderAccessSemaphore = new(10, 10);
 
 		public static readonly ImmutableHashSet<string> _ftpPaths =
 			new HashSet<string>() { "ftp:/", "ftps:/", "ftpes:/" }.ToImmutableHashSet();
@@ -246,9 +253,17 @@ namespace Files.App.Utils.Storage
 				App.Logger?.LogDebug("Skipping problematic path: {Path}", value);
 				return null;
 			}
+			
+			// Get or create a semaphore for this specific path
+			var pathSemaphore = folderAccessSemaphores.GetOrAdd(value, _ => new SemaphoreSlim(1, 1));
+			
+			// Wait for global semaphore (limits total concurrent operations)
+			await globalFolderAccessSemaphore.WaitAsync();
 
 			try
 			{
+				// Wait for path-specific semaphore
+				await pathSemaphore.WaitAsync();
 				if (rootFolder is not null)
 				{
 					var currComponents = GetDirectoryPathComponents(value);
@@ -310,6 +325,18 @@ namespace Files.App.Utils.Storage
 			{
 				App.Logger?.LogWarning(ex, "Failed to get folder with path from: {Path}", value);
 				return null;
+			}
+			finally
+			{
+				// Release semaphores
+				pathSemaphore.Release();
+				globalFolderAccessSemaphore.Release();
+				
+				// Clean up semaphore if no longer needed
+				if (pathSemaphore.CurrentCount == 1)
+				{
+					folderAccessSemaphores.TryRemove(value, out _);
+				}
 			}
 		}
 		public async static Task<IList<StorageFolderWithPath>> GetFoldersWithPathAsync
@@ -491,8 +518,10 @@ namespace Files.App.Utils.Storage
 			var problematicPaths = new[]
 			{
 				@"\.git",        // Git directories
+				@"\.github",     // GitHub directories
 				@"\.svn",        // SVN directories  
 				@"\.hg",         // Mercurial directories
+				@"\.bzr",        // Bazaar directories
 				@"\$Recycle.Bin", // Recycle bin
 				@"\System Volume Information", // System volume info
 				@"\DumpStack.log.tmp", // Crash dump files
@@ -501,6 +530,12 @@ namespace Files.App.Utils.Storage
 				@"\swapfile.sys", // Swap file
 				@"\Config.Msi",   // Windows installer temp
 			};
+			
+			// Also check for paths ending with .git (bare repositories)
+			if (path.EndsWith(".git", StringComparison.OrdinalIgnoreCase))
+			{
+				return true;
+			}
 
 			// Check for problematic path patterns
 			foreach (var problematicPath in problematicPaths)

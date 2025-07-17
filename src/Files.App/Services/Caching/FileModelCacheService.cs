@@ -13,6 +13,7 @@ using System.IO;
 using System.Runtime.CompilerServices;
 using Windows.Storage;
 using Windows.Storage.FileProperties;
+using Windows.Storage.Streams;
 
 namespace Files.App.Services.Caching
 {
@@ -33,7 +34,7 @@ namespace Files.App.Services.Caching
 		private readonly CancellationTokenSource _serviceCancellationTokenSource = new();
 		private readonly List<(string Path, BitmapImage Thumbnail)> _pendingUIUpdates = new();
 		private readonly object _pendingUIUpdatesLock = new();
-		private readonly Timer _uiUpdateTimer;
+		private Timer _uiUpdateTimer;
 
 		// Constants
 		private const int MAX_CONCURRENT_THUMBNAIL_LOADS = 32; // Increased for better performance with large folders
@@ -393,19 +394,29 @@ namespace Files.App.Services.Caching
 				{
 					try
 					{
-						var bitmap = await thumbnailData.ToBitmapAsync();
-						if (bitmap != null)
+						// Store the raw data and create BitmapImage on UI thread to avoid RPC_E_WRONG_THREAD
+						var rawData = thumbnailData;
+						
+						// Schedule UI update on UI thread
+						await _threadingService.ExecuteOnUiThreadAsync(async () =>
 						{
-							// Add to batch for UI update
-							lock (_pendingUIUpdatesLock)
+							try
 							{
-								_pendingUIUpdates.Add((request.Path, bitmap));
+								using var ms = new MemoryStream(rawData);
+								var bitmap = new BitmapImage();
+								await bitmap.SetSourceAsync(ms.AsRandomAccessStream());
+								
+								if (bitmap != null)
+								{
+									AddOrUpdateThumbnail(request.Path, bitmap);
+									ThumbnailLoaded?.Invoke(this, new ThumbnailLoadedEventArgs { Path = request.Path, Thumbnail = bitmap });
+								}
 							}
-						}
-						else
-						{
-							Debug.WriteLine($"Failed to create bitmap for {request.Path}: bitmap was null");
-						}
+							catch (Exception ex)
+							{
+								Debug.WriteLine($"Failed to create bitmap for {request.Path}: {ex.Message}");
+							}
+						});
 					}
 					catch (Exception ex)
 					{
@@ -710,27 +721,41 @@ namespace Files.App.Services.Caching
 
 		private async void ProcessPendingUIUpdates(object state)
 		{
-			List<(string Path, BitmapImage Thumbnail)> updates;
-			
-			lock (_pendingUIUpdatesLock)
+			try
 			{
-				if (_pendingUIUpdates.Count == 0)
-					return;
-					
-				// Take up to UI_UPDATE_BATCH_SIZE items
-				updates = _pendingUIUpdates.Take(UI_UPDATE_BATCH_SIZE).ToList();
-				_pendingUIUpdates.RemoveRange(0, updates.Count);
-			}
-
-			// Update UI on UI thread
-			await _threadingService.ExecuteOnUiThreadAsync(() =>
-			{
-				foreach (var (path, thumbnail) in updates)
+				List<(string Path, BitmapImage Thumbnail)> updates;
+				
+				lock (_pendingUIUpdatesLock)
 				{
-					AddOrUpdateThumbnail(path, thumbnail);
-					ThumbnailLoaded?.Invoke(this, new ThumbnailLoadedEventArgs { Path = path, Thumbnail = thumbnail });
+					if (_pendingUIUpdates.Count == 0)
+						return;
+						
+					// Take up to UI_UPDATE_BATCH_SIZE items
+					updates = _pendingUIUpdates.Take(UI_UPDATE_BATCH_SIZE).ToList();
+					_pendingUIUpdates.RemoveRange(0, updates.Count);
 				}
-			});
+
+				// Update UI on UI thread
+				await _threadingService.ExecuteOnUiThreadAsync(() =>
+				{
+					foreach (var (path, thumbnail) in updates)
+					{
+						try
+						{
+							AddOrUpdateThumbnail(path, thumbnail);
+							ThumbnailLoaded?.Invoke(this, new ThumbnailLoadedEventArgs { Path = path, Thumbnail = thumbnail });
+						}
+						catch (Exception ex)
+						{
+							Debug.WriteLine($"Error updating thumbnail for {path}: {ex.Message}");
+						}
+					}
+				});
+			}
+			catch (Exception ex)
+			{
+				Debug.WriteLine($"Error in ProcessPendingUIUpdates: {ex.Message}");
+			}
 		}
 
 		#endregion

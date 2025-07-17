@@ -83,6 +83,12 @@ namespace Files.App.Views.Layouts
 		private void FileList_Loaded(object sender, RoutedEventArgs e)
 		{
 			ContentScroller = FileList.FindDescendant<ScrollViewer>(x => x.Name == "ScrollViewer");
+			
+			// Hook up scroll event for viewport tracking
+			if (ContentScroller != null)
+			{
+				ContentScroller.ViewChanged += ContentScroller_ViewChanged;
+			}
 		}
 
 		private void ColumnViewBase_GotFocus(object sender, RoutedEventArgs e)
@@ -190,11 +196,23 @@ namespace Files.App.Views.Layouts
 				FileList.ContainerContentChanging -= HighlightPathDirectory;
 			}
 		}
+		
+		private void FileList_ContainerContentChanging(object sender, ContainerContentChangingEventArgs args)
+		{
+			// Call base class method for viewport tracking
+			base.FileList_ContainerContentChanging(sender, args);
+		}
 
 		protected override void OnNavigatingFrom(NavigatingCancelEventArgs e)
 		{
 			base.OnNavigatingFrom(e);
 			UserSettingsService.LayoutSettingsService.PropertyChanged -= LayoutSettingsService_PropertyChanged;
+			
+			// Cleanup scroll event handler
+			if (ContentScroller != null)
+			{
+				ContentScroller.ViewChanged -= ContentScroller_ViewChanged;
+			}
 		}
 
 		private void LayoutSettingsService_PropertyChanged(object? sender, PropertyChangedEventArgs e)

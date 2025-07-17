@@ -211,6 +211,12 @@ namespace Files.App.Views.Layouts
 			FolderSettings.SortOptionPreferenceUpdated -= FolderSettings_SortOptionPreferenceUpdated;
 			ParentShellPageInstance.ShellViewModel.PageTypeUpdated -= FilesystemViewModel_PageTypeUpdated;
 			UserSettingsService.LayoutSettingsService.PropertyChanged -= LayoutSettingsService_PropertyChanged;
+			
+			// Cleanup scroll event handler
+			if (ContentScroller != null)
+			{
+				ContentScroller.ViewChanged -= ContentScroller_ViewChanged;
+			}
 		}
 
 		private void LayoutSettingsService_PropertyChanged(object? sender, PropertyChangedEventArgs e)
@@ -877,6 +883,12 @@ namespace Files.App.Views.Layouts
 		private void FileList_Loaded(object sender, RoutedEventArgs e)
 		{
 			ContentScroller = FileList.FindDescendant<ScrollViewer>(x => x.Name == "ScrollViewer");
+			
+			// Hook up scroll event for viewport tracking
+			if (ContentScroller != null)
+			{
+				ContentScroller.ViewChanged += ContentScroller_ViewChanged;
+			}
 		}
 
 		private void SetDetailsColumnsAsDefault_Click(object sender, RoutedEventArgs e)

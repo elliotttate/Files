@@ -25,6 +25,11 @@ namespace Files.App.Views.Shells
 		private Task _gitFetch = Task.CompletedTask;
 
 		private CancellationTokenSource _gitFetchToken = new CancellationTokenSource();
+		
+		// Navigation throttling to prevent reentrancy crashes
+		protected readonly SemaphoreSlim _navigationSemaphore = new(1, 1);
+		protected DateTime _lastNavigationTime = DateTime.MinValue;
+		protected const int NavigationThrottleMs = 100;
 
 		public static readonly DependencyProperty NavParamsProperty =
 			DependencyProperty.Register(

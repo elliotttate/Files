@@ -78,6 +78,19 @@ namespace Files.App.Utils.Storage
 					{
 						if (item.IsOfType(StorageItemTypes.Folder))
 						{
+							// Pre-check folder name before processing
+							var itemName = item.Name;
+							if (itemName.Equals(".git", StringComparison.OrdinalIgnoreCase) ||
+							    itemName.Equals(".github", StringComparison.OrdinalIgnoreCase) ||
+							    itemName.Equals(".svn", StringComparison.OrdinalIgnoreCase) ||
+							    itemName.Equals(".hg", StringComparison.OrdinalIgnoreCase) ||
+							    itemName.Equals(".bzr", StringComparison.OrdinalIgnoreCase) ||
+							    itemName.EndsWith(".git", StringComparison.OrdinalIgnoreCase))
+							{
+								App.Logger?.LogInformation("Skipping version control folder during enumeration: {FolderName}", itemName);
+								continue;
+							}
+							
 							var folder = await AddFolderAsync(item.AsBaseStorageFolder(), currentStorageFolder, cancellationToken);
 							if (folder is not null)
 							{
@@ -172,6 +185,19 @@ namespace Files.App.Utils.Storage
 			StorageFolderWithPath currentStorageFolder,
 			CancellationToken cancellationToken)
 		{
+			// Skip Git folders and other version control folders
+			var folderName = folder.Name;
+			if (folderName.Equals(".git", StringComparison.OrdinalIgnoreCase) ||
+			    folderName.Equals(".github", StringComparison.OrdinalIgnoreCase) ||
+			    folderName.Equals(".svn", StringComparison.OrdinalIgnoreCase) ||
+			    folderName.Equals(".hg", StringComparison.OrdinalIgnoreCase) ||
+			    folderName.Equals(".bzr", StringComparison.OrdinalIgnoreCase) ||
+			    folderName.EndsWith(".git", StringComparison.OrdinalIgnoreCase))
+			{
+				App.Logger?.LogInformation("Skipping version control folder: {FolderName}", folderName);
+				return null;
+			}
+			
 			try
 			{
 				var basicProperties = await folder.GetBasicPropertiesAsync().AsTask().ConfigureAwait(false);

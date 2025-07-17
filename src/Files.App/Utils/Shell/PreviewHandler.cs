@@ -168,16 +168,16 @@ namespace Files.App.Utils.Shell
 			// If we use Activator.CreateInstance(Type.GetTypeFromCLSID(...)),
 			// CLR will allow in-process server, which defeats isolation and
 			// creates strange bugs.
-			int hr = Win32PInvoke.CoCreateInstance(ref clsid, IntPtr.Zero, Win32PInvoke.ClassContext.LocalServer, ref iid, out pph);
+			Vanara.PInvoke.HRESULT hr = Win32PInvoke.CoCreateInstance(ref clsid, IntPtr.Zero, Win32PInvoke.ClassContext.LocalServer, ref iid, out pph);
 			// See https://blogs.msdn.microsoft.com/adioltean/2005/06/24/when-cocreateinstance-returns-0x80080005-co_e_server_exec_failure/
 			// CO_E_SERVER_EXEC_FAILURE also tends to happen when debugging in Visual Studio.
 			// Moreover, to create the instance in a server at low integrity level, we need
 			// to use another thread with low mandatory label. We keep it simple by creating
 			// a same-integrity object.
-			if (hr == E_SERVER_EXEC_FAILURE)
+			if ((int)hr == E_SERVER_EXEC_FAILURE)
 				hr = Win32PInvoke.CoCreateInstance(ref clsid, IntPtr.Zero, Win32PInvoke.ClassContext.LocalServer, ref iid, out pph);
-			if (hr < 0)
-				throw new COMException(cannotCreate, hr);
+			if (hr.Failed)
+				throw new COMException(cannotCreate, (int)hr);
 			var previewHandlerObject = comWrappers.GetOrCreateObjectForComInstance(pph, CreateObjectFlags.UniqueInstance);
 			previewHandler = previewHandlerObject as IPreviewHandler;
 
@@ -188,9 +188,9 @@ namespace Files.App.Utils.Shell
 			var objectWithSite = previewHandlerObject as IObjectWithSite;
 			if (objectWithSite == null)
 				throw new COMException(cannotCast);
-			hr = objectWithSite.SetSite(comWrappers.GetOrCreateComInterfaceForObject(comSite, CreateComInterfaceFlags.None));
-			if (hr < 0)
-				throw new COMException(cannotSetSite, hr);
+			int hrSetSite = objectWithSite.SetSite(comWrappers.GetOrCreateComInterfaceForObject(comSite, CreateComInterfaceFlags.None));
+			if (hrSetSite < 0)
+				throw new COMException(cannotSetSite, hrSetSite);
 			visuals = previewHandlerObject as IPreviewHandlerVisuals;
 		}
 

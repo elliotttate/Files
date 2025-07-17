@@ -404,6 +404,12 @@ namespace Files.App.Helpers
 				// Handle system file access errors silently
 				return null;
 			}
+			catch (System.Runtime.InteropServices.COMException ex) when (ex.HResult == unchecked((int)0x80070490))
+			{
+				// Handle "Element not found" COM exception for problematic paths (like drive roots) silently
+				// This commonly happens when trying to get icons for system paths like C:\
+				return null;
+			}
 			catch (Exception ex)
 			{
 				// Log other exceptions but don't crash

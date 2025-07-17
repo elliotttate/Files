@@ -4,7 +4,9 @@
 using Files.App.ViewModels.Properties;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Media.Imaging;
+using System.IO;
 using Windows.Storage.FileProperties;
+using Windows.Storage.Streams;
 
 namespace Files.App.ViewModels.Previews
 {
@@ -91,7 +93,13 @@ namespace Files.App.ViewModels.Previews
 				IconOptions.None);
 			
 			if (result is not null)
-				await MainWindow.Instance.DispatcherQueue.EnqueueOrInvokeAsync(async () => FileImage = await result.ToBitmapAsync());
+				await MainWindow.Instance.DispatcherQueue.EnqueueOrInvokeAsync(async () => 
+				{
+					using var ms = new MemoryStream(result);
+					var image = new BitmapImage();
+					await image.SetSourceAsync(ms.AsRandomAccessStream());
+					FileImage = image;
+				});
 			else
 				FileImage ??= await MainWindow.Instance.DispatcherQueue.EnqueueOrInvokeAsync(() => new BitmapImage());
 

@@ -2,10 +2,12 @@
 // Licensed under the MIT License.
 
 using Microsoft.Extensions.Logging;
+using Microsoft.UI.Xaml.Media.Imaging;
 using System.IO;
 using Windows.Storage;
 using Windows.Storage.FileProperties;
 using Windows.Storage.Search;
+using Windows.Storage.Streams;
 using FileAttributes = System.IO.FileAttributes;
 using WIN32_FIND_DATA = Files.App.Helpers.Win32PInvoke.WIN32_FIND_DATA;
 
@@ -111,7 +113,7 @@ namespace Files.App.Utils.Storage
 								{
 									if (item == null)
 									{
-										App.Logger?.LogWarning("Null item in everythingResults");
+										App.Logger?.LogInformation("Null item in everythingResults");
 										continue;
 									}
 									results.Add(item);
@@ -127,7 +129,7 @@ namespace Files.App.Utils.Storage
 							}
 							catch (OperationCanceledException)
 							{
-								App.Logger?.LogWarning("Everything search was cancelled");
+								App.Logger?.LogInformation("Everything search was cancelled");
 								return;
 							}
 							catch (Exception ex)
@@ -139,7 +141,7 @@ namespace Files.App.Utils.Storage
 					}
 					else
 					{
-						App.Logger?.LogWarning("Everything service not found in DI container");
+						App.Logger?.LogInformation("Everything service not found in DI container");
 					}
 				}
 				else
@@ -163,7 +165,7 @@ namespace Files.App.Utils.Storage
 			}
 			catch (Exception e)
 			{
-				App.Logger?.LogWarning(e, "Search failure");
+				App.Logger?.LogInformation(e, "Search failure");
 			}
 		}
 
@@ -203,7 +205,7 @@ namespace Files.App.Utils.Storage
 			}
 			catch (Exception e)
 			{
-				App.Logger?.LogWarning(e, "Search failure");
+				App.Logger?.LogInformation(e, "Search failure");
 			}
 
 			return results;
@@ -213,7 +215,7 @@ namespace Files.App.Utils.Storage
 		{
 			if (folder is null)
 			{
-				App.Logger?.LogWarning("SearchAsync called with null folder");
+				App.Logger?.LogInformation("SearchAsync called with null folder");
 				return;
 			}
 
@@ -224,7 +226,7 @@ namespace Files.App.Utils.Storage
 
 			if (options is null)
 			{
-				App.Logger?.LogWarning("ToQueryOptions returned null");
+				App.Logger?.LogInformation("ToQueryOptions returned null");
 				return;
 			}
 
@@ -247,7 +249,7 @@ namespace Files.App.Utils.Storage
 					}
 					catch (Exception ex)
 					{
-						App.Logger?.LogWarning(ex, "Error creating ListedItem from StorageItem");
+						App.Logger?.LogInformation(ex, "Error creating ListedItem from StorageItem");
 					}
 
 					if (results.Count == 32 || results.Count % 300 == 0 /*|| sampler.CheckNow()*/)
@@ -340,7 +342,7 @@ namespace Files.App.Utils.Storage
 					}
 					catch (Exception ex)
 					{
-						App.Logger?.LogWarning(ex, "Error creating ListedItem from StorageItem");
+						App.Logger?.LogInformation(ex, "Error creating ListedItem from StorageItem");
 					}
 				}
 
@@ -491,36 +493,18 @@ namespace Files.App.Utils.Storage
 				}
 			}
 
-			if (listedItem is not null && MaxItemCount > 0) // Only load icon for searchbox suggestions
+			// For Everything search results, defer thumbnail loading to avoid reentrancy issues
+			if (listedItem is not null && (MaxItemCount > 0 || listedItem.LoadFileIcon)) // Load icon for searchbox suggestions or when explicitly requested
 			{
-				_ = FileThumbnailHelper.GetIconAsync(
-					listedItem.ItemPath,
-					Constants.ShellIconSizes.Small,
-					isFolder,
-					IconOptions.ReturnIconOnly | IconOptions.UseCurrentScale)
-					.ContinueWith((t) =>
-					{
-						if (t.IsCompletedSuccessfully && t.Result is not null)
-						{
-							_ = FilesystemTasks.Wrap(() => MainWindow.Instance.DispatcherQueue.EnqueueOrInvokeAsync(async () =>
-							{
-								try
-								{
-									var bitmapImage = await t.Result.ToBitmapAsync();
-									if (bitmapImage is not null)
-										listedItem.FileImage = bitmapImage;
-								}
-								catch (Exception ex)
-								{
-									App.Logger?.LogWarning(ex, "Failed to convert icon to bitmap for {Path}", listedItem.ItemPath);
-								}
-							}, Microsoft.UI.Dispatching.DispatcherQueuePriority.Low));
-						}
-						else if (t.IsFaulted)
-						{
-							App.Logger?.LogWarning(t.Exception, "Failed to load icon for {Path}", listedItem.ItemPath);
-						}
-					}, TaskContinuationOptions.ExecuteSynchronously);
+				App.Logger?.LogInformation("FolderSearch: Deferring icon load for {Path}, isFolder={IsFolder}", listedItem.ItemPath, isFolder);
+				// Just mark that we want to load the icon later, don't load it now
+				listedItem.LoadFileIcon = true;
+				listedItem.NeedsPlaceholderGlyph = true;
+			}
+			else
+			{
+				App.Logger?.LogInformation("FolderSearch: Skipping icon load for {Path}, listedItem null={IsNull}, MaxItemCount={MaxItemCount}, LoadFileIcon={LoadFileIcon}", 
+					listedItem?.ItemPath ?? "null", listedItem is null, MaxItemCount, listedItem?.LoadFileIcon ?? false);
 			}
 
 			return listedItem;
@@ -617,36 +601,18 @@ namespace Files.App.Utils.Storage
 					};
 				}
 			}
-			if (listedItem is not null && MaxItemCount > 0) // Only load icon for searchbox suggestions
+			// For Everything search results, defer thumbnail loading to avoid reentrancy issues
+			if (listedItem is not null && (MaxItemCount > 0 || listedItem.LoadFileIcon)) // Load icon for searchbox suggestions or when explicitly requested
 			{
-				try
-				{
-					var iconResult = await FileThumbnailHelper.GetIconAsync(
-						item.Path,
-						Constants.ShellIconSizes.Small,
-						item.IsOfType(StorageItemTypes.Folder),
-						IconOptions.ReturnIconOnly | IconOptions.UseCurrentScale);
-
-					if (iconResult is not null)
-					{
-						try
-						{
-							listedItem.FileImage = await iconResult.ToBitmapAsync();
-						}
-						catch (Exception ex)
-						{
-							App.Logger?.LogWarning(ex, "Failed to convert icon to bitmap for {Path}", item.Path);
-							listedItem.NeedsPlaceholderGlyph = true;
-						}
-					}
-					else
-						listedItem.NeedsPlaceholderGlyph = true;
-				}
-				catch (Exception ex)
-				{
-					App.Logger?.LogWarning(ex, "Failed to load icon for {Path}", item.Path);
-					listedItem.NeedsPlaceholderGlyph = true;
-				}
+				App.Logger?.LogInformation("FolderSearch: Deferring icon load for storage item {Path}", item.Path);
+				// Just mark that we want to load the icon later, don't load it now
+				listedItem.LoadFileIcon = true;
+				listedItem.NeedsPlaceholderGlyph = true;
+			}
+			else
+			{
+				App.Logger?.LogInformation("FolderSearch: Skipping icon load for storage item {Path}, listedItem null={IsNull}, MaxItemCount={MaxItemCount}, LoadFileIcon={LoadFileIcon}", 
+					item?.Path ?? "null", listedItem is null, MaxItemCount, listedItem?.LoadFileIcon ?? false);
 			}
 			return listedItem;
 		}

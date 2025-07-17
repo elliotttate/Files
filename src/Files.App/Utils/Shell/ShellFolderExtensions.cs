@@ -194,15 +194,54 @@ namespace Files.App.Utils.Shell
 						App.Logger.LogWarning($"Error checking drive {pathOrPIDL}: {ex.Message}");
 						return null;
 					}
+
+					// For drive root paths, use SHParseDisplayName to get a valid PIDL
+					try
+					{
+						var hresult = Shell32.SHParseDisplayName(pathOrPIDL, IntPtr.Zero, out var pidl, 0, out _);
+						if (hresult == HRESULT.S_OK && !pidl.IsNull)
+						{
+							try
+							{
+								return ShellItem.Open(pidl);
+							}
+							catch (COMException ex) when (ex.HResult == unchecked((int)0x80070490))
+							{
+								App.Logger.LogInformation($"Drive root shell item not accessible: {pathOrPIDL}, HResult: 0x{ex.HResult:X8}");
+								return null;
+							}
+						}
+						else
+						{
+							App.Logger.LogInformation($"Failed to parse drive path to PIDL: {pathOrPIDL}");
+							return null;
+						}
+					}
+					catch (COMException ex) when (ex.HResult == unchecked((int)0x80070490))
+					{
+						App.Logger.LogInformation($"Drive root not accessible: {pathOrPIDL}");
+						return null;
+					}
 				}
 
-				return GetStringAsPIDL(pathOrPIDL, out var pPIDL) ? ShellItem.Open(pPIDL) : ShellItem.Open(pathOrPIDL);
+				// Try to open the shell item, with specific handling for drive root COM exceptions
+				try
+				{
+					return GetStringAsPIDL(pathOrPIDL, out var pPIDL) ? ShellItem.Open(pPIDL) : ShellItem.Open(pathOrPIDL);
+				}
+				catch (COMException ex) when (ex.HResult == unchecked((int)0x80070490)) // ERROR_NOT_FOUND
+				{
+					// Handle "Element not found" COM exception for drive roots and other problematic paths silently
+					// This commonly happens when trying to access drive roots like C:\ or special shell namespaces
+					App.Logger.LogInformation($"Shell item not accessible (silent): {pathOrPIDL}");
+					return null;
+				}
 			}
 			catch (COMException ex) when (ex.HResult == unchecked((int)0x80070490)) // ERROR_NOT_FOUND
 			{
 				// Shell namespace extension not found or not accessible
 				// This can happen with certain GUIDs like Frequent Places when they're not available
-				App.Logger.LogWarning($"Shell namespace extension not found: {pathOrPIDL}. Error: {ex.Message}");
+				App.Logger.LogInformation($"Shell namespace extension not found: {pathOrPIDL}");
 				return null;
 			}
 			catch (Exception ex)

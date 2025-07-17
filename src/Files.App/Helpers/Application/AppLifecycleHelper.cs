@@ -252,6 +252,7 @@ namespace Files.App.Helpers
 					.AddSingleton<IFileModelCacheService, FileModelCacheService>()
 					.AddSingleton<IThumbnailLoadingQueue, ThumbnailLoadingQueue>()
 					.AddSingleton<IThumbnailPerformanceMonitor, ThumbnailPerformanceMonitor>()
+					.AddSingleton<Services.Thumbnails.IViewportThumbnailLoaderService, Services.Thumbnails.SafeViewportThumbnailLoaderService>()
 					.AddSingleton<IStorageArchiveService, StorageArchiveService>()
 					.AddSingleton<IStorageSecurityService, StorageSecurityService>()
 					.AddSingleton<IWindowsCompatibilityService, WindowsCompatibilityService>()

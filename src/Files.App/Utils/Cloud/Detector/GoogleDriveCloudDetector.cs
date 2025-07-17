@@ -54,6 +54,13 @@ namespace Files.App.Utils.Cloud
 				{
 					continue;
 				}
+				
+				// Skip paths inside Git folders
+				if (IsPathInsideGitFolder(path))
+				{
+					_logger.LogWarning($"Skipping Google Drive sync folder inside Git repository: {path}");
+					continue;
+				}
 
 				// By default, the path will be prefixed with "\\?\" (unless another app has explicitly changed it).
 				// \\?\ indicates to Win32 that the filename may be longer than MAX_PATH (see MSDN).
@@ -88,6 +95,13 @@ namespace Files.App.Utils.Cloud
 
 				if (!AddMyDriveToPathAndValidate(ref path))
 					continue;
+					
+				// Skip paths inside Git folders
+				if (IsPathInsideGitFolder(path))
+				{
+					_logger.LogWarning($"Skipping Google Drive mount point inside Git repository: {path}");
+					continue;
+				}
 
 				var folder = await StorageFolder.GetFolderFromPathAsync(path);
 				string title = reader["name"]?.ToString() ?? folder.Name;
@@ -117,6 +131,14 @@ namespace Files.App.Utils.Cloud
 			// Add "My Drive" to the base GD path; validate; return the resulting cloud provider.
 			if (!AddMyDriveToPathAndValidate(ref googleDrivePath))
 				yield break;
+				
+			// Skip paths inside Git folders
+			if (IsPathInsideGitFolder(googleDrivePath))
+			{
+				_logger.LogWarning($"Skipping Google Drive path inside Git repository: {googleDrivePath}");
+				yield break;
+			}
+				
 			yield return new CloudProvider(CloudProviders.GoogleDrive)
 			{
 				Name = "Google Drive",
@@ -301,6 +323,48 @@ namespace Files.App.Utils.Cloud
 
 			path = Path.Combine(path, "My Drive");
 			return ValidatePath(path);
+		}
+		
+		private static bool IsPathInsideGitFolder(string path)
+		{
+			if (string.IsNullOrEmpty(path))
+				return false;
+				
+			try
+			{
+				// Check if path contains .git or other version control folders
+				var pathParts = path.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+				foreach (var part in pathParts)
+				{
+					if (part.Equals(".git", StringComparison.OrdinalIgnoreCase) ||
+					    part.Equals(".github", StringComparison.OrdinalIgnoreCase) ||
+					    part.Equals(".svn", StringComparison.OrdinalIgnoreCase) ||
+					    part.Equals(".hg", StringComparison.OrdinalIgnoreCase) ||
+					    part.Equals(".bzr", StringComparison.OrdinalIgnoreCase) ||
+					    part.EndsWith(".git", StringComparison.OrdinalIgnoreCase))
+					{
+						return true;
+					}
+				}
+				
+				// Also check parent directories
+				var directory = new DirectoryInfo(path);
+				while (directory != null)
+				{
+					if (directory.Name.Equals(".git", StringComparison.OrdinalIgnoreCase) ||
+					    directory.Name.EndsWith(".git", StringComparison.OrdinalIgnoreCase))
+					{
+						return true;
+					}
+					directory = directory.Parent;
+				}
+			}
+			catch (Exception ex)
+			{
+				_logger.LogWarning(ex, "Error checking if path is inside Git folder: {Path}", path);
+			}
+			
+			return false;
 		}
 	}
 }
