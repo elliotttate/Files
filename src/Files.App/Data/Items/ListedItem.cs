@@ -94,8 +94,28 @@ namespace Files.App.Utils
 					return true;
 			}
 			
-			// Skip hidden system files and temp files
-			if (path.Contains("\\$") || path.Contains("\\~") || path.Contains("\\TEMP\\"))
+			// Skip specific system files, but be more selective
+			// Only skip files that start with $ or ~ (system/temp files), not any path containing these
+			string fileName = Path.GetFileName(path);
+			if (!string.IsNullOrEmpty(fileName) && (fileName.StartsWith("$") || fileName.StartsWith("~")))
+				return true;
+				
+			// Skip temporary build files that don't need thumbnails
+			if (!string.IsNullOrEmpty(fileName))
+			{
+				// Skip WPF temporary files
+				if (fileName.Contains("_wpftmp.") || fileName.EndsWith("_wpftmp"))
+					return true;
+					
+				// Skip build output directories
+				if (path.Contains("\\OBJ\\DEBUG\\") || path.Contains("\\OBJ\\RELEASE\\"))
+					return true;
+			}
+				
+			// Only skip if the path is IN the temp directory, not if it contains "TEMP" anywhere
+			// (e.g., "C:\MyTemplates\" should not be skipped)
+			string tempPath = Path.GetTempPath().ToUpperInvariant();
+			if (!string.IsNullOrEmpty(tempPath) && path.StartsWith(tempPath))
 				return true;
 				
 			return false;
@@ -293,10 +313,10 @@ namespace Files.App.Utils
 					var viewportLoader = Ioc.Default.GetService<Services.Thumbnails.IViewportThumbnailLoaderService>();
 					bool useViewportLoading = viewportLoader != null;
 					
-					// **HYBRID APPROACH**: Allow individual loading if viewport system is unavailable OR as fallback
-					// This ensures thumbnails still load even if viewport system is slow
+					// Only allow individual loading if viewport system is NOT available
+					// This prevents duplicate loading and thread pool exhaustion
 					if (LoadFileIcon && !thumbnailLoaded && !isLoadingThumbnail && !string.IsNullOrEmpty(ItemPath) && 
-						(!useViewportLoading || !NeedsPlaceholderGlyph)) // Allow if no viewport system OR if we really need the thumbnail
+						!useViewportLoading) // Only load individually if viewport system is not available
 					{
 						// Set loading flag BEFORE starting async operation to prevent race conditions
 						isLoadingThumbnail = true;
@@ -308,11 +328,6 @@ namespace Files.App.Utils
 						{
 							try
 							{
-								// TEMP: Add small random delay to spread out load
-								var delay = Random.Shared.Next(50, 200);
-								App.Logger?.LogDebug($"[TEMP-DELAY] Waiting {delay}ms before loading thumbnail for {System.IO.Path.GetFileName(ItemPath)}");
-								await Task.Delay(delay);
-								
 								// Use retry helper for thumbnail loading
 								await ThumbnailRetryHelper.ExecuteWithRetryAsync(
 									async () => {

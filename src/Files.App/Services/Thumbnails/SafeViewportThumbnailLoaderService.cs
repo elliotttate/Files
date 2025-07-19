@@ -47,7 +47,11 @@ namespace Files.App.Services.Thumbnails
 		private readonly ConcurrentDictionary<string, List<WeakReference<ListedItem>>> _pendingRequestsForPath = new(StringComparer.OrdinalIgnoreCase); // Track all items waiting for same path
 		
 		// Synchronization
-		private readonly SemaphoreSlim _loadingSemaphore = new(1, 1);
+#if RELEASE
+		private readonly SemaphoreSlim _loadingSemaphore = new(1, 1); // Ultra-conservative in release
+#else
+		private readonly SemaphoreSlim _loadingSemaphore = new(2, 2); // Match MAX_CONCURRENT_LOADS - VERY conservative
+#endif
 		private readonly CancellationTokenSource _serviceCancellationTokenSource = new();
 		private CancellationTokenSource _currentBatchCancellationTokenSource = new();
 		
@@ -61,15 +65,42 @@ namespace Files.App.Services.Thumbnails
 		private double _currentScrollVelocity = 0;
 		private DateTime _lastCoalesceTime = DateTime.UtcNow;
 		
-		// Constants
-		private const int BATCH_SIZE = 5; // TEMP: Reduced from 10 for testing
-		private const int PROCESSING_DELAY_MS = 200; // TEMP: Increased to 200ms for testing timing issues
-		private const int MAX_RETRY_COUNT = 2;
-		private const int MAX_CONCURRENT_LOADS = 5; // TEMP: Reduced from 10 for testing
-		private const int SCROLL_VELOCITY_THRESHOLD = 30; // Events/sec threshold for high-speed scrolling
-		private const int HIGH_SPEED_BATCH_SIZE = 3; // TEMP: Reduced from 5 for testing
-		private const int COALESCE_WINDOW_MS = 100; // Window for coalescing requests
-		private const long MEMORY_PRESSURE_THRESHOLD = 300_000_000; // 300MB threshold for GC
+		// Aggressive rate limiting
+		private DateTime _lastBatchProcessTime = DateTime.UtcNow;
+		private int _failureCount = 0;
+		private const int MAX_FAILURES_BEFORE_PAUSE = 5;
+		private const int FAILURE_PAUSE_MS = 5000; // 5 second pause after failures
+		
+		// Constants - AGGRESSIVE SETTINGS FOR RELEASE STABILITY
+#if RELEASE
+		private const int BATCH_SIZE = 3; // Even smaller batches in release
+		private const int PROCESSING_DELAY_MS = 200; // Longer delays in release
+		private const int MAX_RETRY_COUNT = 1; // Minimal retries in release
+		private const int MAX_CONCURRENT_LOADS = 1; // Ultra-conservative in release
+#else
+		private const int BATCH_SIZE = 5; // Reduced to prevent overwhelming the system
+		private const int PROCESSING_DELAY_MS = 100; // Increased delay between batches
+		private const int MAX_RETRY_COUNT = 2; // Reduced to fail fast
+		private const int MAX_CONCURRENT_LOADS = 2; // VERY conservative to prevent thread pool exhaustion
+#endif
+		private const int SCROLL_VELOCITY_THRESHOLD = 20; // Lower threshold for detecting fast scrolling
+		private const int HIGH_SPEED_BATCH_SIZE = 3; // Very small batches during scrolling
+		private const int COALESCE_WINDOW_MS = 200; // Longer window to batch more requests
+		private const long MEMORY_PRESSURE_THRESHOLD = 300_000_000; // 300MB - more aggressive GC
+		private const int MAX_QUEUE_SIZE = 200; // Much smaller queue
+		private const int QUEUE_HIGH_WATER_MARK = 150; // Start dropping items earlier
+		
+		// Thread pool monitoring
+		private static bool _isThreadPoolExhausted = false;
+		private static DateTime _lastThreadPoolCheck = DateTime.MinValue;
+		private const int THREAD_POOL_CHECK_INTERVAL_MS = 1000; // Check every second
+#if RELEASE
+		private const int THREAD_POOL_DANGER_THRESHOLD = 20000; // More aggressive threshold in release
+		private static bool _emergencyStopEnabled = false; // Complete stop when critical
+		private const int THREAD_POOL_CRITICAL_THRESHOLD = 25000; // Critical threshold
+#else
+		private const int THREAD_POOL_DANGER_THRESHOLD = 30000; // Consider exhausted above 30k threads
+#endif
 		
 		public int ActiveLoadCount => _loadQueue.Count;
 		public bool IsLoading => !_loadQueue.IsEmpty;
@@ -82,6 +113,7 @@ namespace Files.App.Services.Thumbnails
 			public bool IsPriority { get; set; }
 			public int RetryCount { get; set; }
 			public DateTime QueuedTime { get; set; } = DateTime.UtcNow;
+			public bool IsFolder { get; set; } // Store this to avoid needing the item later
 		}
 
 		public SafeViewportThumbnailLoaderService()
@@ -118,16 +150,17 @@ namespace Files.App.Services.Thumbnails
 			// Try to get the main window's dispatcher queue
 			try
 			{
-				if (App.Window != null && App.Window.DispatcherQueue != null)
+				var mainWindow = MainWindow.Instance;
+				if (mainWindow != null && mainWindow.DispatcherQueue != null)
 				{
-					_dispatcherQueue = App.Window.DispatcherQueue;
-					_logger?.LogInformation("[DISPATCHER] Got UI DispatcherQueue from App.Window");
+					_dispatcherQueue = mainWindow.DispatcherQueue;
+					_logger?.LogInformation("[DISPATCHER] Got UI DispatcherQueue from MainWindow.Instance");
 					return _dispatcherQueue;
 				}
 			}
 			catch (Exception ex)
 			{
-				_logger?.LogWarning(ex, "[DISPATCHER] Failed to get DispatcherQueue from App.Window");
+				_logger?.LogWarning(ex, "[DISPATCHER] Failed to get DispatcherQueue from MainWindow.Instance");
 			}
 			
 			// Last resort - try current thread
@@ -139,12 +172,75 @@ namespace Files.App.Services.Thumbnails
 			
 			return _dispatcherQueue;
 		}
+		
+		/// <summary>
+		/// Detects if a thumbnail is a placeholder (generic icon) rather than actual content
+		/// </summary>
+		private bool IsPlaceholderThumbnail(BitmapImage thumbnail)
+		{
+			if (thumbnail == null)
+				return true;
+				
+			try
+			{
+				// Check for common placeholder characteristics
+				// 1. Very small size (generic icons are usually 16x16 or 32x32)
+				if (thumbnail.PixelWidth <= 32 && thumbnail.PixelHeight <= 32)
+				{
+					_logger?.LogDebug("Detected placeholder: Small size {Width}x{Height}", thumbnail.PixelWidth, thumbnail.PixelHeight);
+					return true;
+				}
+				
+				// 2. Check if it's a system icon (these often have specific sizes)
+				if ((thumbnail.PixelWidth == 16 && thumbnail.PixelHeight == 16) ||
+					(thumbnail.PixelWidth == 32 && thumbnail.PixelHeight == 32) ||
+					(thumbnail.PixelWidth == 48 && thumbnail.PixelHeight == 48))
+				{
+					// These are common icon sizes that might indicate a placeholder
+					// We can't be 100% sure without pixel analysis, but it's a good heuristic
+					_logger?.LogDebug("Detected potential placeholder: Common icon size {Width}x{Height}", thumbnail.PixelWidth, thumbnail.PixelHeight);
+					// Don't return true here - some real thumbnails might be these sizes
+				}
+				
+				// 3. If we can access the decode pixel dimensions and they're very small
+				if (thumbnail.DecodePixelWidth > 0 && thumbnail.DecodePixelWidth <= 32 &&
+					thumbnail.DecodePixelHeight > 0 && thumbnail.DecodePixelHeight <= 32)
+				{
+					_logger?.LogDebug("Detected placeholder: Small decode size {Width}x{Height}", thumbnail.DecodePixelWidth, thumbnail.DecodePixelHeight);
+					return true;
+				}
+				
+				// If it passed all checks, it's probably a real thumbnail
+				return false;
+			}
+			catch (Exception ex)
+			{
+				_logger?.LogWarning(ex, "Error checking if thumbnail is placeholder");
+				// If we can't check, assume it's not a placeholder
+				return false;
+			}
+		}
 
 		public async Task UpdateViewportAsync(IEnumerable<ListedItem> visibleItems, uint thumbnailSize, CancellationToken cancellationToken = default)
 		{
 			if (visibleItems == null)
 			{
 				_logger?.LogDebug("UpdateViewportAsync called with null items");
+				return;
+			}
+			
+			// Check thread pool status - bail out if exhausted
+			CheckThreadPoolStatus();
+#if RELEASE
+			if (_emergencyStopEnabled)
+			{
+				_logger?.LogError("[EMERGENCY-STOP] Thumbnail loading is completely disabled due to critical thread pool state!");
+				return;
+			}
+#endif
+			if (_isThreadPoolExhausted)
+			{
+				_logger?.LogWarning("[THREAD-POOL] Skipping viewport update - thread pool exhausted!");
 				return;
 			}
 
@@ -165,18 +261,26 @@ namespace Files.App.Services.Thumbnails
 			// Track scroll velocity
 			UpdateScrollVelocity();
 			
+			// Aggressive rate limiting - skip updates if too frequent
+			var timeSinceLastUpdate = DateTime.UtcNow - _lastCoalesceTime;
+			if (timeSinceLastUpdate.TotalMilliseconds < 100) // Minimum 100ms between updates
+			{
+				_logger?.LogDebug("[{UpdateId}] Rate limiting: Skipping update, only {Ms:F0}ms since last update", 
+					updateId, timeSinceLastUpdate.TotalMilliseconds);
+				return;
+			}
+			
 			// Check if we should coalesce this update
 			if (_currentScrollVelocity > SCROLL_VELOCITY_THRESHOLD)
 			{
-				var timeSinceLastCoalesce = DateTime.UtcNow - _lastCoalesceTime;
-				if (timeSinceLastCoalesce.TotalMilliseconds < COALESCE_WINDOW_MS)
+				if (timeSinceLastUpdate.TotalMilliseconds < COALESCE_WINDOW_MS)
 				{
 					_logger?.LogDebug("[{UpdateId}] Coalescing viewport update due to high scroll velocity: {Velocity:F1} events/sec", 
 						updateId, _currentScrollVelocity);
 					return; // Skip this update, will be handled by next one
 				}
-				_lastCoalesceTime = DateTime.UtcNow;
 			}
+			_lastCoalesceTime = DateTime.UtcNow;
 
 			try
 			{
@@ -295,8 +399,27 @@ namespace Files.App.Services.Thumbnails
 								Path = item.ItemPath,
 								ItemReference = itemRef,
 								ThumbnailSize = thumbnailSize,
-								IsPriority = true
+								IsPriority = true,
+								IsFolder = item.PrimaryItemAttribute == Windows.Storage.StorageItemTypes.Folder
 							};
+							
+							// Check queue overflow before enqueueing
+							if (_loadQueue.Count >= MAX_QUEUE_SIZE)
+							{
+								_logger?.LogWarning("[{UpdateId}] Queue overflow! Dropping request for {Path}, queue size: {QueueSize}", 
+									updateId, item.ItemPath, _loadQueue.Count);
+								skippedCount++;
+								continue;
+							}
+							
+							// Apply back-pressure if queue is getting full
+							if (_loadQueue.Count >= QUEUE_HIGH_WATER_MARK && !request.IsPriority)
+							{
+								_logger?.LogDebug("[{UpdateId}] Queue near capacity ({QueueSize}), dropping non-priority request for {Path}", 
+									updateId, _loadQueue.Count, item.ItemPath);
+								skippedCount++;
+								continue;
+							}
 							
 							_loadQueue.Enqueue(request);
 							queuedCount++;
@@ -335,14 +458,24 @@ namespace Files.App.Services.Thumbnails
 				foreach (var item in itemsNearViewport.Where(i => i?.FileImage == null && !string.IsNullOrEmpty(i?.ItemPath)))
 				{
 					// Only queue if not already queued (deduplication)
-					if (_queuedPaths.TryAdd(item.ItemPath, true))
+					if (_requestStatus.TryAdd(item.ItemPath, RequestStatus.Queued))
 					{
+						// Check queue overflow for non-priority preload items
+						if (_loadQueue.Count >= QUEUE_HIGH_WATER_MARK)
+						{
+							_logger?.LogDebug("Queue near capacity ({QueueSize}), skipping preload for {Path}", 
+								_loadQueue.Count, item.ItemPath);
+							_requestStatus.TryRemove(item.ItemPath, out _); // Remove from tracking
+							continue;
+						}
+						
 						var request = new ThumbnailLoadRequest
 						{
 							Path = item.ItemPath,
 							ItemReference = new WeakReference<ListedItem>(item),
 							ThumbnailSize = thumbnailSize,
-							IsPriority = false
+							IsPriority = false,
+							IsFolder = item.PrimaryItemAttribute == Windows.Storage.StorageItemTypes.Folder
 						};
 						
 						_loadQueue.Enqueue(request);
@@ -389,8 +522,8 @@ namespace Files.App.Services.Thumbnails
 					// Log health status every 10 seconds
 					if (DateTime.UtcNow - lastHealthCheck > TimeSpan.FromSeconds(10))
 					{
-						_logger?.LogInformation("[HEALTH] Queue: {QueueSize}, Queued paths: {QueuedPaths}, Visible: {Visible}, Processed: {Processed}/10s, Memory: {Memory:N0} bytes, Threads: {Threads}",
-							_loadQueue.Count, _queuedPaths.Count, _visibleItems.Count, processedSinceLastCheck, totalMemory, workerThreads);
+						_logger?.LogInformation("[HEALTH] Queue: {QueueSize}, Request status count: {StatusCount}, Visible: {Visible}, Processed: {Processed}/10s, Memory: {Memory:N0} bytes, Threads: {Threads}",
+							_loadQueue.Count, _requestStatus.Count, _visibleItems.Count, processedSinceLastCheck, totalMemory, workerThreads);
 						
 						// Report resource usage
 						ResourceMonitor.ReportResourceUsage("SafeViewportThumbnailLoader");
@@ -436,13 +569,22 @@ namespace Files.App.Services.Thumbnails
 							// Re-enqueue at the end if not at max retries
 							if (request.RetryCount < MAX_RETRY_COUNT)
 							{
-								request.RetryCount++;
-								_loadQueue.Enqueue(request);
+								// Check queue overflow even for retries
+								if (_loadQueue.Count < MAX_QUEUE_SIZE)
+								{
+									request.RetryCount++;
+									_loadQueue.Enqueue(request);
+								}
+								else
+								{
+									_logger?.LogWarning("Queue overflow, dropping retry for {Path}", request.Path);
+									_requestStatus.TryUpdate(request.Path, RequestStatus.Failed, RequestStatus.Queued);
+								}
 							}
 							else
 							{
 								// Only remove if we've exceeded retry count
-								_queuedPaths.TryRemove(request.Path, out _);
+								_requestStatus.TryUpdate(request.Path, RequestStatus.Failed, RequestStatus.Queued);
 							}
 							skippedCount++;
 							continue;
@@ -452,7 +594,7 @@ namespace Files.App.Services.Thumbnails
 						if (!request.IsPriority && _loadQueue.Count > BATCH_SIZE * 2)
 						{
 							// Skip non-priority items when queue is backed up
-							_queuedPaths.TryRemove(request.Path, out _);
+							_requestStatus.TryUpdate(request.Path, RequestStatus.Cancelled, RequestStatus.Queued);
 							skippedCount++;
 							continue;
 						}
@@ -468,14 +610,22 @@ namespace Files.App.Services.Thumbnails
 						// Log if we're stuck with items in queue but can't process them
 						if (_loadQueue.Count > 0)
 						{
-							_logger?.LogWarning("[STUCK] Have {Count} items in queue but couldn't dequeue any! Queued paths: {QueuedCount}", 
-								_loadQueue.Count, _queuedPaths.Count);
+							_logger?.LogWarning("[STUCK] Have {Count} items in queue but couldn't dequeue any! Request status count: {StatusCount}", 
+								_loadQueue.Count, _requestStatus.Count);
 							
-							// Clear stale entries from _queuedPaths if we're stuck
-							if (_queuedPaths.Count > _loadQueue.Count * 2)
+							// Clear stale entries from _requestStatus if we're stuck
+							if (_requestStatus.Count > _loadQueue.Count * 2)
 							{
-								_logger?.LogWarning("[STUCK] Clearing stale entries from queued paths tracking");
-								_queuedPaths.Clear();
+								_logger?.LogWarning("[STUCK] Clearing stale entries from request status tracking");
+								// Only clear completed/failed/cancelled entries
+								var stalePaths = _requestStatus.Where(kvp => 
+									kvp.Value == RequestStatus.Completed || 
+									kvp.Value == RequestStatus.Failed || 
+									kvp.Value == RequestStatus.Cancelled).Select(kvp => kvp.Key).ToList();
+								foreach (var path in stalePaths)
+								{
+									_requestStatus.TryRemove(path, out _);
+								}
 							}
 						}
 						continue;
@@ -484,19 +634,53 @@ namespace Files.App.Services.Thumbnails
 					_logger?.LogDebug("Processing batch of {BatchSize} thumbnails (skipped {SkippedCount}), queue remaining: {QueueSize}", 
 						batch.Count, skippedCount, _loadQueue.Count);
 
-					// Process batch
-					await ProcessBatchAsync(batch);
-					processedSinceLastCheck += batch.Count;
+					// Circuit breaker pattern - pause if too many failures
+					if (_failureCount >= MAX_FAILURES_BEFORE_PAUSE)
+					{
+						_logger?.LogWarning("Circuit breaker triggered! Pausing for {Ms}ms due to {Count} failures", 
+							FAILURE_PAUSE_MS, _failureCount);
+						await Task.Delay(FAILURE_PAUSE_MS, _serviceCancellationTokenSource.Token);
+						_failureCount = 0; // Reset after pause
+					}
+					
+					// Check thread pool before processing
+					CheckThreadPoolStatus();
+					if (_isThreadPoolExhausted)
+					{
+						_logger?.LogWarning("[THREAD-POOL] Stopping batch processing - thread pool exhausted!");
+						// Put items back in queue
+						foreach (var req in batch)
+						{
+							if (_requestStatus.TryUpdate(req.Path, RequestStatus.Queued, RequestStatus.Processing))
+							{
+								_loadQueue.Enqueue(req);
+							}
+						}
+						await Task.Delay(5000, _serviceCancellationTokenSource.Token); // Wait 5 seconds
+						continue;
+					}
+					
+					// Process batch with proper exception handling
+					try
+					{
+						await ProcessBatchAsync(batch);
+						processedSinceLastCheck += batch.Count;
+						_failureCount = 0; // Reset on success
+					}
+					catch (Exception batchEx)
+					{
+						_failureCount++;
+						_logger?.LogError(batchEx, "Error processing thumbnail batch of {Count} items. Failure count: {FailureCount}", 
+							batch.Count, _failureCount);
+						// Mark failed items to prevent infinite retries
+						foreach (var request in batch)
+						{
+							_requestStatus.TryUpdate(request.Path, RequestStatus.Failed, RequestStatus.Processing);
+						}
+					}
 					
 					// Small delay to prevent overwhelming the system
 					await Task.Delay(PROCESSING_DELAY_MS, _serviceCancellationTokenSource.Token);
-					
-					// TEMP: Additional delay after each batch for testing
-					if (batch.Count > 5)
-					{
-						_logger?.LogDebug("[TEMP-DELAY] Adding extra 100ms delay after large batch");
-						await Task.Delay(100, _serviceCancellationTokenSource.Token);
-					}
 				}
 				catch (OperationCanceledException)
 				{
@@ -518,65 +702,79 @@ namespace Files.App.Services.Thumbnails
 			var batchId = Guid.NewGuid().ToString().Substring(0, 8);
 			_logger?.LogDebug("[BATCH-{BatchId}] Starting batch processing of {Count} items", batchId, batch.Count);
 			
-			// Process in smaller groups to avoid thread explosion
-			const int GROUP_SIZE = 2; // Reduced from 4 to prevent thread exhaustion
+			// Process with proper concurrency control
+			var tasks = new List<Task>();
 			
-			for (int i = 0; i < batch.Count; i += GROUP_SIZE)
+			foreach (var request in batch)
 			{
-				var group = batch.Skip(i).Take(GROUP_SIZE).ToList();
-				var tasks = new List<Task>();
-				
-				foreach (var request in group)
+				// Use semaphore to limit concurrent loads
+				var task = Task.Run(async () =>
 				{
-					// Don't use Task.Run - process on existing thread pool threads
-					var task = ProcessSingleRequestAsync(request, batchId);
-					tasks.Add(task);
-				}
-				
-				// Wait for this group before starting next to avoid thread explosion
-				await Task.WhenAll(tasks);
-				
-				// TEMP: Add delay between groups to ensure UI can keep up
-				if (i + GROUP_SIZE < batch.Count)
-				{
-					_logger?.LogDebug("[TEMP-DELAY] Adding 50ms delay between processing groups");
-					await Task.Delay(50);
-				}
+					await _loadingSemaphore.WaitAsync(_serviceCancellationTokenSource.Token);
+					try
+					{
+						await ProcessSingleRequestAsync(request, batchId);
+					}
+					finally
+					{
+						_loadingSemaphore.Release();
+					}
+				});
+				tasks.Add(task);
 			}
+				
+			
+			// Wait for all tasks to complete
+			await Task.WhenAll(tasks);
 			
 			_logger?.LogDebug("[BATCH-{BatchId}] Batch processing completed", batchId);
 		}
 
 		private async Task ProcessSingleRequestAsync(ThumbnailLoadRequest request, string batchId)
 		{
+			// Defensive null checks
+			if (request == null)
+			{
+				_logger?.LogWarning("[BATCH-{BatchId}] Null request passed to ProcessSingleRequestAsync", batchId);
+				return;
+			}
+			
+			if (string.IsNullOrEmpty(request.Path))
+			{
+				_logger?.LogWarning("[BATCH-{BatchId}] Empty path in request", batchId);
+				return;
+			}
+			
 			var requestId = Guid.NewGuid().ToString().Substring(0, 8);
 			_logger?.LogDebug("[BATCH-{BatchId}][REQ-{RequestId}] Starting ProcessSingleRequestAsync for {Path}", batchId, requestId, request.Path);
 			
 			try
 			{
-				// Check if item still exists
-				if (!request.ItemReference.TryGetTarget(out var item))
+				// Update request status
+				_requestStatus.TryUpdate(request.Path, RequestStatus.Processing, RequestStatus.Queued);
+				
+				// First check if any of the pending items for this path already have a thumbnail
+				if (_pendingRequestsForPath.TryGetValue(request.Path, out var existingPendingRefs))
 				{
-					_logger?.LogDebug("[BATCH-{BatchId}][REQ-{RequestId}] Item reference lost for {Path}", batchId, requestId, request.Path);
-					// Remove from tracking since the item is gone
-					_queuedPaths.TryRemove(request.Path, out _);
-					return;
-				}
-
-				// Skip if already has thumbnail
-				if (item.FileImage != null)
-				{
-					_logger?.LogDebug("[BATCH-{BatchId}][REQ-{RequestId}] Item already has thumbnail: {Path}", batchId, requestId, request.Path);
-					// Remove from tracking since it already has a thumbnail
-					_queuedPaths.TryRemove(request.Path, out _);
-					return;
+					foreach (var pendingRef in existingPendingRefs)
+					{
+						if (pendingRef.TryGetTarget(out var pendingItem) && pendingItem.FileImage != null)
+						{
+							_logger?.LogDebug("[BATCH-{BatchId}][REQ-{RequestId}] A pending item already has thumbnail: {Path}", batchId, requestId, request.Path);
+							// Mark as completed and clean up
+							_requestStatus.TryUpdate(request.Path, RequestStatus.Completed, RequestStatus.Processing);
+							_pendingRequestsForPath.TryRemove(request.Path, out _);
+							return;
+						}
+					}
 				}
 
 				_logger?.LogInformation("[BATCH-{BatchId}][REQ-{RequestId}] Loading thumbnail for {Path}, ThumbnailSize: {Size}, IsFolder: {IsFolder}", 
-					batchId, requestId, request.Path, request.ThumbnailSize, item.PrimaryItemAttribute == Windows.Storage.StorageItemTypes.Folder);
+					batchId, requestId, request.Path, request.ThumbnailSize, request.IsFolder);
 				
-				// Load thumbnail
-				_logger?.LogDebug("[BATCH-{BatchId}][REQ-{RequestId}] Calling FileThumbnailHelper.GetIconAsync for {Path}", batchId, requestId, request.Path);
+				// Load thumbnail - use stored IsFolder to avoid needing the item
+				_logger?.LogDebug("[BATCH-{BatchId}][REQ-{RequestId}] Calling FileThumbnailHelper.GetIconAsync for {Path}, IsFolder={IsFolder}", 
+					batchId, requestId, request.Path, request.IsFolder);
 				
 				byte[]? iconData = null;
 				try
@@ -584,7 +782,7 @@ namespace Files.App.Services.Thumbnails
 					iconData = await FileThumbnailHelper.GetIconAsync(
 						request.Path,
 						request.ThumbnailSize,
-						item.PrimaryItemAttribute == Windows.Storage.StorageItemTypes.Folder,
+						request.IsFolder,
 						IconOptions.UseCurrentScale);
 				}
 				catch (Exception ex)
@@ -658,8 +856,9 @@ namespace Files.App.Services.Thumbnails
 						}
 						else
 						{
-							// No pending items, just update the original
-							itemsToUpdate.Add(item);
+							// No pending items - thumbnail is cached but no items to update
+							_logger?.LogDebug("[BATCH-{BatchId}][REQ-{RequestId}] No pending items for {Path}, thumbnail cached for future use", 
+								batchId, requestId, request.Path);
 						}
 						
 						// Update all items
@@ -699,8 +898,8 @@ namespace Files.App.Services.Thumbnails
 						
 						_logger?.LogDebug("[BATCH-{BatchId}] Successfully loaded thumbnail for {Path}", batchId, request.Path);
 						
-						// Successfully processed - remove from tracking
-						_queuedPaths.TryRemove(request.Path, out _);
+						// Successfully processed - update status
+						_requestStatus.TryUpdate(request.Path, RequestStatus.Completed, RequestStatus.Processing);
 					}
 					else
 					{
@@ -715,7 +914,7 @@ namespace Files.App.Services.Thumbnails
 						else
 						{
 							// Remove from tracking only after max retries
-							_queuedPaths.TryRemove(request.Path, out _);
+							_requestStatus.TryUpdate(request.Path, RequestStatus.Failed, RequestStatus.Processing);
 							_pendingRequestsForPath.TryRemove(request.Path, out _);
 						}
 					}
@@ -734,7 +933,7 @@ namespace Files.App.Services.Thumbnails
 					else
 					{
 						// Remove from tracking only after max retries
-						_queuedPaths.TryRemove(request.Path, out _);
+						_requestStatus.TryUpdate(request.Path, RequestStatus.Failed, RequestStatus.Processing);
 						_pendingRequestsForPath.TryRemove(request.Path, out _);
 					}
 				}
@@ -748,7 +947,7 @@ namespace Files.App.Services.Thumbnails
 				if (request.RetryCount < MAX_RETRY_COUNT)
 				{
 					request.RetryCount++;
-					if (_queuedPaths.TryAdd(request.Path, true))
+					if (_requestStatus.TryUpdate(request.Path, RequestStatus.Queued, RequestStatus.Failed))
 					{
 						_loadQueue.Enqueue(request);
 						_logger?.LogDebug("[BATCH-{BatchId}] Queued retry {RetryCount} for {Path}", batchId, request.RetryCount, request.Path);
@@ -761,14 +960,50 @@ namespace Files.App.Services.Thumbnails
 				else
 				{
 					_logger?.LogError("[BATCH-{BatchId}] Giving up on {Path} after {MaxRetry} retries", batchId, request.Path, MAX_RETRY_COUNT);
-					// Remove from tracking since we're giving up
-					_queuedPaths.TryRemove(request.Path, out _);
+					// Mark as failed since we're giving up
+					_requestStatus.TryUpdate(request.Path, RequestStatus.Failed, RequestStatus.Processing);
 					// Also remove pending requests for this path
 					_pendingRequestsForPath.TryRemove(request.Path, out _);
 				}
 			}
 		}
 
+		private static void CheckThreadPoolStatus()
+		{
+			// Only check periodically to avoid overhead
+			if ((DateTime.UtcNow - _lastThreadPoolCheck).TotalMilliseconds < THREAD_POOL_CHECK_INTERVAL_MS)
+				return;
+			
+			_lastThreadPoolCheck = DateTime.UtcNow;
+			
+			ThreadPool.GetAvailableThreads(out int workerThreads, out int completionPortThreads);
+			ThreadPool.GetMaxThreads(out int maxWorkerThreads, out int maxCompletionPortThreads);
+			
+			var usedWorkerThreads = maxWorkerThreads - workerThreads;
+			
+			_isThreadPoolExhausted = usedWorkerThreads > THREAD_POOL_DANGER_THRESHOLD;
+			
+#if RELEASE
+			// Check for critical threshold in release builds
+			if (usedWorkerThreads > THREAD_POOL_CRITICAL_THRESHOLD)
+			{
+				_emergencyStopEnabled = true;
+				App.Logger?.LogError($"[EMERGENCY-STOP] Thread pool critical! Used: {usedWorkerThreads}/{maxWorkerThreads} - ALL THUMBNAIL LOADING STOPPED!");
+			}
+			else if (_emergencyStopEnabled && usedWorkerThreads < THREAD_POOL_DANGER_THRESHOLD - 5000)
+			{
+				// Only re-enable when we're well below the danger threshold
+				_emergencyStopEnabled = false;
+				App.Logger?.LogWarning($"[EMERGENCY-STOP] Thread pool recovered. Used: {usedWorkerThreads}/{maxWorkerThreads} - Resuming thumbnail loading");
+			}
+#endif
+			
+			if (_isThreadPoolExhausted)
+			{
+				App.Logger?.LogError($"[THREAD-POOL-EXHAUSTED] Thread pool is dangerously low! Used: {usedWorkerThreads}/{maxWorkerThreads} worker threads");
+			}
+		}
+		
 		private async Task UpdateItemThumbnailSafelyAsync(ListedItem item, BitmapImage thumbnail)
 		{
 			var updateId = Guid.NewGuid().ToString().Substring(0, 8);
@@ -783,7 +1018,15 @@ namespace Files.App.Services.Thumbnails
 				{
 					_logger?.LogWarning("[{UpdateId}] No dispatcher queue available, updating directly", updateId);
 					// Fallback to direct update if no dispatcher
-					item.FileImage = thumbnail;
+					if (thumbnail != null && !IsPlaceholderThumbnail(thumbnail))
+					{
+						item.FileImage = thumbnail;
+						item.NeedsPlaceholderGlyph = false;
+					}
+					else
+					{
+						item.NeedsPlaceholderGlyph = true;
+					}
 					return;
 				}
 
@@ -801,11 +1044,28 @@ namespace Files.App.Services.Thumbnails
 								updateId, item?.ItemPath, item?.FileImage != null);
 							
 							// Only update if item still doesn't have a thumbnail
-							if (item.FileImage == null)
+							if (item?.FileImage == null && item != null)
 							{
-								_logger?.LogDebug("[{UpdateId}] UI thread: Setting FileImage property for {Path}", updateId, item.ItemPath);
-								item.FileImage = thumbnail;
-								_logger?.LogInformation("[{UpdateId}] UI thread: Thumbnail SUCCESSFULLY SET for {Path}", updateId, item.ItemPath);
+								// Check if this is a real thumbnail or a placeholder
+								if (thumbnail != null && !IsPlaceholderThumbnail(thumbnail))
+								{
+									try
+									{
+										_logger?.LogDebug("[{UpdateId}] UI thread: Setting FileImage property for {Path}", updateId, item.ItemPath);
+										item.FileImage = thumbnail;
+										item.NeedsPlaceholderGlyph = false;
+										_logger?.LogInformation("[{UpdateId}] UI thread: Thumbnail SUCCESSFULLY SET for {Path}", updateId, item.ItemPath);
+									}
+									catch (Exception setEx)
+									{
+										_logger?.LogError(setEx, "[{UpdateId}] UI thread: Failed to set FileImage for {Path}", updateId, item?.ItemPath ?? "null");
+									}
+								}
+								else
+								{
+									_logger?.LogDebug("[{UpdateId}] UI thread: Placeholder detected for {Path}", updateId, item?.ItemPath ?? "null");
+									item.NeedsPlaceholderGlyph = true;
+								}
 							}
 							else
 							{
@@ -850,7 +1110,7 @@ namespace Files.App.Services.Thumbnails
 			
 			_visibleItems.Clear();
 			_itemReferences.Clear();
-			_queuedPaths.Clear();
+			_requestStatus.Clear();
 			
 			// Clear queue
 			while (_loadQueue.TryDequeue(out _)) { }

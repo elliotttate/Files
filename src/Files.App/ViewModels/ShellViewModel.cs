@@ -3452,10 +3452,6 @@ namespace Files.App.ViewModels
 				{
 					App.Logger?.LogInformation($"Forcing viewport update after search complete with {FilesAndFolders.Count} items");
 					
-					// TEMP: Add delay to ensure UI is ready
-					App.Logger?.LogDebug("[TEMP-DELAY] Waiting 300ms before viewport update to ensure UI is ready");
-					await Task.Delay(300);
-					
 					// Get the first batch of items that would be visible
 					var initialBatch = FilesAndFolders.Take(50).ToList(); // Reasonable number for initial viewport
 					
@@ -3464,12 +3460,6 @@ namespace Files.App.ViewModels
 					{
 						await UpdateViewportAsync(initialBatch, CancellationToken.None);
 						App.Logger?.LogInformation($"Viewport update triggered successfully for {initialBatch.Count} items");
-						
-						// TEMP: Trigger again after a delay to catch any missed items
-						App.Logger?.LogDebug("[TEMP-DELAY] Scheduling second viewport update in 500ms");
-						await Task.Delay(500);
-						await UpdateViewportAsync(initialBatch, CancellationToken.None);
-						App.Logger?.LogDebug("[TEMP-DELAY] Second viewport update completed");
 					}
 					catch (Exception ex)
 					{

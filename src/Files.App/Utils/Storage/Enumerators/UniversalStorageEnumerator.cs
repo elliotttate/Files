@@ -11,6 +11,7 @@ namespace Files.App.Utils.Storage
 {
 	public static class UniversalStorageEnumerator
 	{
+		private static readonly IUserSettingsService UserSettingsService = Ioc.Default.GetRequiredService<IUserSettingsService>();
 		public static async Task<List<ListedItem>> ListEntries(
 			BaseStorageFolder rootFolder,
 			StorageFolderWithPath currentStorageFolder,
@@ -211,7 +212,7 @@ namespace Files.App.Utils.Storage
 							IsHiddenItem = false,
 							Opacity = 1,
 							FileImage = null,
-							LoadFileIcon = false,
+							LoadFileIcon = UserSettingsService.FoldersSettingsService.ShowThumbnails,
 							ItemNameRaw = folder.DisplayName,
 							ItemDateModifiedReal = basicProperties.DateModified,
 							ItemDateCreatedReal = folder.DateCreated,
@@ -238,7 +239,7 @@ namespace Files.App.Utils.Storage
 							IsHiddenItem = false,
 							Opacity = 1,
 							FileImage = null,
-							LoadFileIcon = false,
+							LoadFileIcon = UserSettingsService.FoldersSettingsService.ShowThumbnails,
 							ItemPath = string.IsNullOrEmpty(folder.Path) ? PathNormalization.Combine(currentStorageFolder.Path, folder.Name) : folder.Path,
 							FileSize = basicProperties.Size.ToSizeString(),
 							FileSizeBytes = (long)basicProperties.Size,
@@ -258,7 +259,7 @@ namespace Files.App.Utils.Storage
 							IsHiddenItem = false,
 							Opacity = 1,
 							FileImage = null,
-							LoadFileIcon = false,
+							LoadFileIcon = UserSettingsService.FoldersSettingsService.ShowThumbnails,
 							ItemPath = string.IsNullOrEmpty(folder.Path) ? PathNormalization.Combine(currentStorageFolder.Path, folder.Name) : folder.Path,
 							FileSize = null,
 							FileSizeBytes = 0
