@@ -137,17 +137,27 @@ namespace Files.App.Services.Thumbnails
 				CompletionSource = new TaskCompletionSource<ThumbnailLoadResult>()
 			};
 
-			// Check queue size limit
+			// Check queue size limit and handle overflow
 			lock (_queueLock)
 			{
 				if (_requestQueue.Count >= MAX_QUEUE_SIZE)
 				{
-					return new ThumbnailLoadResult
+					// Remove oldest low-priority requests to make room
+					var removedCount = RemoveOldestLowPriorityRequests(MAX_QUEUE_SIZE / 10); // Remove 10% of queue
+					
+					if (_requestQueue.Count >= MAX_QUEUE_SIZE)
 					{
-						Path = path,
-						Success = false,
-						ErrorMessage = "Queue is full"
-					};
+						// Still full after cleanup
+						_logger.LogWarning("Thumbnail queue overflow. Removed {Count} items but queue still full", removedCount);
+						return new ThumbnailLoadResult
+						{
+							Path = path,
+							Success = false,
+							ErrorMessage = "Queue is full after cleanup"
+						};
+					}
+					
+					_logger.LogDebug("Thumbnail queue overflow handled. Removed {Count} old requests", removedCount);
 				}
 
 				// Cancel any existing request for the same path
@@ -187,6 +197,7 @@ namespace Files.App.Services.Thumbnails
 						WasCancelled = true
 					});
 				}
+				// Don't dispose here - it will be disposed in the finally block of ProcessRequestAsync
 				_cancellationTokens.TryRemove(path, out _);
 			});
 
@@ -446,7 +457,10 @@ namespace Files.App.Services.Thumbnails
 			{
 				// Cleanup
 				_pendingRequests.TryRemove(request.Path, out _);
-				_cancellationTokens.TryRemove(request.Path, out _);
+				if (_cancellationTokens.TryRemove(request.Path, out var cts))
+				{
+					cts?.Dispose(); // Properly dispose CancellationTokenSource to prevent resource leak
+				}
 				
 				Interlocked.Decrement(ref _activeRequests);
 				_processingSlots.Release();
@@ -465,6 +479,60 @@ namespace Files.App.Services.Thumbnails
 
 			// Complete the request
 			request.CompletionSource.TrySetResult(result);
+		}
+		
+		/// <summary>
+		/// Removes oldest low-priority requests from the queue to prevent overflow
+		/// </summary>
+		private int RemoveOldestLowPriorityRequests(int countToRemove)
+		{
+			var removedCount = 0;
+			
+			// Note: This method must be called within a lock (_queueLock)
+			// Get all items from queue
+			var allRequests = new List<(InternalThumbnailRequest request, int priority)>();
+			while (_requestQueue.TryDequeue(out var request, out var priority))
+			{
+				allRequests.Add((request, priority));
+			}
+			
+			// Sort by priority (ascending) and then by queued time (oldest first)
+			allRequests.Sort((a, b) => 
+			{
+				var priorityCompare = a.priority.CompareTo(b.priority);
+				if (priorityCompare != 0) return priorityCompare;
+				return a.request.QueuedTime.CompareTo(b.request.QueuedTime);
+			});
+			
+			// Remove the specified number of lowest priority items
+			for (int i = 0; i < Math.Min(countToRemove, allRequests.Count); i++)
+			{
+				var request = allRequests[i].request;
+				if (_pendingRequests.TryRemove(request.Path, out _))
+				{
+					request.CompletionSource.TrySetResult(new ThumbnailLoadResult
+					{
+						Path = request.Path,
+						Success = false,
+						ErrorMessage = "Removed due to queue overflow",
+						WasCancelled = true
+					});
+					
+					_cancellationTokens.TryRemove(request.Path, out var cts);
+					cts?.Cancel();
+					cts?.Dispose();
+					
+					removedCount++;
+				}
+			}
+			
+			// Re-add remaining items back to queue
+			for (int i = removedCount; i < allRequests.Count; i++)
+			{
+				_requestQueue.Enqueue(allRequests[i].request, allRequests[i].priority);
+			}
+			
+			return removedCount;
 		}
 
 		private void ReportProgress(object? state)

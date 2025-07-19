@@ -174,7 +174,10 @@ namespace Files.App.Utils.Storage
 
 		public async static Task<BaseStorageFile> DangerousGetFileFromPathAsync
 			(string value, StorageFolderWithPath rootFolder = null, StorageFolderWithPath parentFolder = null)
-				=> (await DangerousGetFileWithPathFromPathAsync(value, rootFolder, parentFolder)).Item;
+		{
+			var result = await DangerousGetFileWithPathFromPathAsync(value, rootFolder, parentFolder);
+			return result?.Item;
+		}
 		public async static Task<StorageFileWithPath> DangerousGetFileWithPathFromPathAsync
 			(string value, StorageFolderWithPath rootFolder = null, StorageFolderWithPath parentFolder = null)
 		{
@@ -193,6 +196,10 @@ namespace Files.App.Utils.Storage
 						path = PathNormalization.Combine(path, folder.Name);
 					}
 					var file = await folder.GetFileAsync(currComponents.Last().Title);
+					if (file == null)
+					{
+						return null;
+					}
 					path = PathNormalization.Combine(path, file.Name);
 					return new StorageFileWithPath(file, path);
 				}
@@ -206,6 +213,10 @@ namespace Files.App.Utils.Storage
 						path = PathNormalization.Combine(path, folder.Name);
 					}
 					var file = await folder.GetFileAsync(currComponents.Last().Title);
+					if (file == null)
+					{
+						return null;
+					}
 					path = PathNormalization.Combine(path, file.Name);
 					return new StorageFileWithPath(file, path);
 				}
@@ -215,6 +226,12 @@ namespace Files.App.Utils.Storage
 				? Path.GetFullPath(Path.Combine(parentFolder.Path, value)) // Relative path
 				: value;
 			var item = await BaseStorageFile.GetFileFromPathAsync(fullPath);
+			
+			// Check if the file was successfully retrieved
+			if (item == null)
+			{
+				return null;
+			}
 
 			if (parentFolder is not null && parentFolder.Item is IPasswordProtectedItem ppis && item is IPasswordProtectedItem ppid)
 				ppid.Credentials = ppis.Credentials;

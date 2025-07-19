@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 using Files.App.Services.SizeProvider;
+using Files.App.Services.Thumbnails;
 using Files.Shared.Helpers;
 using LibGit2Sharp;
 using Microsoft.Extensions.Logging;
@@ -14,6 +15,7 @@ using System.IO;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using System.Threading;
 using Vanara.Windows.Shell;
 using Windows.Foundation;
 using Windows.Storage;
@@ -126,18 +128,34 @@ namespace Files.App.ViewModels
 			{
 				if (SetProperty(ref _EnabledGitProperties, value) && value is not GitProperties.None)
 				{
-					_ = Task.Run(async () =>
+					var gitPropertiesTask = Task.Run(async () =>
 					{
-						foreach (var item in filesAndFolders)
+						try
 						{
-							if (item is IGitItem gitItem &&
-								(!gitItem.StatusPropertiesInitialized && value is GitProperties.All or GitProperties.Status
-								|| !gitItem.CommitPropertiesInitialized && value is GitProperties.All or GitProperties.Commit))
+							foreach (var item in filesAndFolders)
 							{
-								await LoadGitPropertiesAsync(gitItem).ConfigureAwait(false);
+								if (item is IGitItem gitItem &&
+									(!gitItem.StatusPropertiesInitialized && value is GitProperties.All or GitProperties.Status
+									|| !gitItem.CommitPropertiesInitialized && value is GitProperties.All or GitProperties.Commit))
+								{
+									await LoadGitPropertiesAsync(gitItem).ConfigureAwait(false);
+								}
 							}
 						}
+						catch (Exception ex)
+						{
+							App.Logger?.LogError(ex, "Error loading git properties");
+						}
 					});
+
+					// Handle task exceptions properly
+					_ = gitPropertiesTask.ContinueWith(task =>
+					{
+						if (task.IsFaulted)
+						{
+							App.Logger?.LogError(task.Exception, "Unhandled error in git properties loading task");
+						}
+					}, TaskScheduler.Default);
 				}
 			}
 		}
@@ -750,9 +768,9 @@ namespace Files.App.ViewModels
 				
 				App.Logger?.LogInformation("Creating semaphores");
 				enumFolderSemaphore = new SemaphoreSlim(1, 1);
-				getFileOrFolderSemaphore = new SemaphoreSlim(50);
+				getFileOrFolderSemaphore = new SemaphoreSlim(32, 32); // Reduce from 50 to 32
 				bulkOperationSemaphore = new SemaphoreSlim(1, 1);
-				loadThumbnailSemaphore = new SemaphoreSlim(64, 64); // Increase to 64
+				loadThumbnailSemaphore = new SemaphoreSlim(8, 8); // Reduce from 64 to 8 - viewport service handles concurrency
 				
 				App.Logger?.LogInformation("Subscribing to UserSettingsService events");
 				if (UserSettingsService == null)
@@ -871,7 +889,12 @@ namespace Files.App.ViewModels
 		{
 			try
 			{
-				await enumFolderSemaphore.WaitAsync(semaphoreCTS.Token);
+				// Add timeout to prevent deadlocks
+				if (!await enumFolderSemaphore.WaitAsync(TimeSpan.FromSeconds(5), semaphoreCTS.Token))
+				{
+					App.Logger?.LogWarning("Timeout waiting for enumFolderSemaphore in FolderSizeProvider_SizeChanged");
+					return;
+				}
 			}
 			catch (OperationCanceledException)
 			{
@@ -963,20 +986,70 @@ namespace Files.App.ViewModels
 			if (IsLoadingItems)
 			{
 				IsLoadingCancelled = true;
-				addFilesCTS.Cancel();
+				// Properly dispose the old cancellation token source
+				var oldCTS = addFilesCTS;
 				addFilesCTS = new CancellationTokenSource();
+				
+				// Cancel and dispose the old token source safely
+				try
+				{
+					oldCTS.Cancel();
+					// Give a small delay before disposing to let active operations complete
+					_ = Task.Delay(100).ContinueWith(_ => oldCTS.Dispose(), TaskScheduler.Default);
+				}
+				catch (ObjectDisposedException)
+				{
+					// Already disposed, ignore
+				}
 			}
 			CancelExtendedPropertiesLoading();
 			filesAndFolders.Clear();
 			FilesAndFolders.Clear();
 			ClearViewport(); // Clear viewport thumbnails
+			
+			// Clear thumbnail loading queue to reset singleton service state
+			try
+			{
+				var thumbnailQueue = Ioc.Default.GetService<IThumbnailLoadingQueue>();
+				if (thumbnailQueue != null)
+				{
+					// Cancel all pending thumbnail requests for this directory
+					thumbnailQueue.CancelRequests(_ => true);
+				}
+			}
+			catch (Exception ex)
+			{
+				App.Logger?.LogWarning(ex, "Error clearing thumbnail loading queue");
+			}
+			
 			CancelSearch();
 		}
 
 		public void CancelExtendedPropertiesLoading()
 		{
-			loadPropsCTS.Cancel();
-			loadPropsCTS = new CancellationTokenSource();
+			// Create new CTS first
+			var newCTS = new CancellationTokenSource();
+			
+			// Atomically swap the CTS
+			var oldCTS = Interlocked.Exchange(ref loadPropsCTS, newCTS);
+			
+			// Cancel and dispose the old token source safely
+			if (oldCTS != null)
+			{
+				try
+				{
+					oldCTS.Cancel();
+					// Dispose after a delay to let active operations handle cancellation
+					_ = Task.Delay(100).ContinueWith(_ => 
+					{
+						try { oldCTS.Dispose(); } catch { }
+					}, TaskScheduler.Default);
+				}
+				catch (ObjectDisposedException)
+				{
+					// Already disposed, ignore
+				}
+			}
 		}
 
 		public void CancelExtendedPropertiesLoadingForItem(ListedItem item)
@@ -1104,10 +1177,14 @@ namespace Files.App.ViewModels
 			
 			try
 			{
-				// Cancel any previous operation
-				applyChangesCTS.Cancel();
+				// Cancel any previous operation and dispose properly
+				var oldCTS = applyChangesCTS;
 				applyChangesCTS = new CancellationTokenSource();
 				var cancellationToken = applyChangesCTS.Token;
+				
+				// Cancel and dispose the old token source
+				oldCTS.Cancel();
+				oldCTS.Dispose();
 				
 				if (filesAndFolders is null || filesAndFolders.Count == 0)
 				{
@@ -1519,84 +1596,52 @@ namespace Files.App.ViewModels
 		if (item == null || string.IsNullOrEmpty(item.ItemPath))
 			return;
 
-		// Try new caching service first if available
-		if (item.FileImage == null)
-		{
-			try
-			{
-				await item.LoadThumbnailAsync((uint)LayoutSizeKindHelper.GetIconSize(folderSettings.LayoutMode), cancellationToken);
-				
-				// Check if thumbnail was actually loaded by the new service
-				if (item.FileImage != null)
-				{
-					return; // Success - thumbnail loaded
-				}
-			}
-			catch (Exception ex)
-			{
-				App.Logger?.LogDebug(ex, "New cache service failed for {Path}, falling back to old implementation", item.ItemPath);
-			}
-		}
+		// Skip if thumbnail is already loaded
+		if (item.FileImage != null)
+			return;
 
-		// Fallback to old implementation if needed
-		var loadNonCachedThumbnail = false;
+		// Force proper thumbnail size, not just icons
 		var thumbnailSize = LayoutSizeKindHelper.GetIconSize(folderSettings.LayoutMode);
-		var returnIconOnly = UserSettingsService.FoldersSettingsService.ShowThumbnails == false || thumbnailSize < 48;
-
-		// TODO Remove this property when all the layouts can support different icon sizes
+		
+		// ALWAYS use at least 48px for thumbnails to avoid the 16px icon issue
+		if (thumbnailSize < 48)
+			thumbnailSize = 48;
+		
+		var returnIconOnly = UserSettingsService.FoldersSettingsService.ShowThumbnails == false;
 		var useCurrentScale = folderSettings.LayoutMode == FolderLayoutModes.DetailsView || folderSettings.LayoutMode == FolderLayoutModes.ListView || folderSettings.LayoutMode == FolderLayoutModes.ColumnView || folderSettings.LayoutMode == FolderLayoutModes.CardsView;
 
 		byte[]? result = null;
 
-		// Non-cached thumbnails take longer to generate
-		if (item.IsFolder || !FileExtensionHelpers.IsExecutableFile(item.FileExtension))
-		{
-			if (!returnIconOnly)
-			{
-				// Get cached thumbnail
-				result = await FileThumbnailHelper.GetIconAsync(
-						item.ItemPath,
-						thumbnailSize,
-						item.IsFolder,
-						IconOptions.ReturnThumbnailOnly | IconOptions.ReturnOnlyIfCached | (useCurrentScale ? IconOptions.UseCurrentScale : IconOptions.None));
+		// Force thumbnail loading (not just icons) for better quality
+		var iconOptions = returnIconOnly ? IconOptions.ReturnIconOnly : IconOptions.None;
+		if (useCurrentScale)
+			iconOptions |= IconOptions.UseCurrentScale;
 
-				cancellationToken.ThrowIfCancellationRequested();
-				loadNonCachedThumbnail = true;
-			}
+		// Single call to get icon/thumbnail with proper size
+		result = await FileThumbnailHelper.GetIconAsync(
+			item.ItemPath,
+			thumbnailSize,
+			item.IsFolder,
+			iconOptions);
 
-			if (result is null)
-			{
-				// Get icon
-				result = await FileThumbnailHelper.GetIconAsync(
-						item.ItemPath,
-						thumbnailSize,
-						item.IsFolder,
-						IconOptions.ReturnIconOnly | (useCurrentScale ? IconOptions.UseCurrentScale : IconOptions.None));
-
-				cancellationToken.ThrowIfCancellationRequested();
-			}
-		}
-		else
-		{
-			// Get icon or thumbnail
-			result = await FileThumbnailHelper.GetIconAsync(
-					item.ItemPath,
-					thumbnailSize,
-					item.IsFolder,
-					(returnIconOnly ? IconOptions.ReturnIconOnly : IconOptions.None) | (useCurrentScale ? IconOptions.UseCurrentScale : IconOptions.None));
-
-			cancellationToken.ThrowIfCancellationRequested();
-		}
+		cancellationToken.ThrowIfCancellationRequested();
 
 		if (result is not null)
 		{
-			await SafeEnqueueOrInvokeAsync(async () =>
+			try
 			{
-				// Assign FileImage property
-				var image = await result.ToBitmapAsync();
-				if (image is not null)
-					item.FileImage = image;
-			}, Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal);
+				await SafeEnqueueOrInvokeAsync(async () =>
+				{
+					// Assign FileImage property
+					var image = await result.ToBitmapAsync();
+					if (image is not null)
+						item.FileImage = image;
+				}, Microsoft.UI.Dispatching.DispatcherQueuePriority.Low);
+			}
+			catch (Exception ex)
+			{
+				App.Logger?.LogDebug(ex, "Error setting FileImage for {Path}", item.ItemPath);
+			}
 
 			cancellationToken.ThrowIfCancellationRequested();
 		}
@@ -1608,54 +1653,23 @@ namespace Files.App.ViewModels
 
 		if (iconOverlay is not null)
 		{
-			await SafeEnqueueOrInvokeAsync(async () =>
+			try
 			{
-				item.IconOverlay = await iconOverlay.ToBitmapAsync();
-				item.ShieldIcon = await GetShieldIcon();
-			}, Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal);
+				await SafeEnqueueOrInvokeAsync(async () =>
+				{
+					item.IconOverlay = await iconOverlay.ToBitmapAsync();
+					item.ShieldIcon = await GetShieldIcon();
+				}, Microsoft.UI.Dispatching.DispatcherQueuePriority.Low);
+			}
+			catch (Exception ex)
+			{
+				App.Logger?.LogDebug(ex, "Error setting IconOverlay for {Path}", item.ItemPath);
+			}
 
 			cancellationToken.ThrowIfCancellationRequested();
 		}
 
-		if (loadNonCachedThumbnail)
-		{
-			// Get non-cached thumbnail asynchronously
-			_ = Task.Run(async () =>
-			{
-				// Add small delay for search results to prevent UI overwhelm during rapid scrolling
-				if (IsSearchResults)
-				{
-					await Task.Delay(100, cancellationToken);
-				}
-				
-				await loadThumbnailSemaphore.WaitAsync(cancellationToken);
-				try
-				{
-					result = await FileThumbnailHelper.GetIconAsync(
-							item.ItemPath,
-							thumbnailSize,
-							item.IsFolder,
-							IconOptions.ReturnThumbnailOnly | (useCurrentScale ? IconOptions.UseCurrentScale : IconOptions.None));
-				}
-				finally
-				{
-					loadThumbnailSemaphore.Release();
-				}
-
-				cancellationToken.ThrowIfCancellationRequested();
-
-				if (result is not null)
-				{
-					await SafeEnqueueOrInvokeAsync(async () =>
-					{
-						// Assign FileImage property
-						var image = await result.ToBitmapAsync();
-						if (image is not null)
-							item.FileImage = image;
-					}, Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal);
-				}
-			}, cancellationToken);
-		}
+		// Simplified approach - no background loading needed since we're using the viewport service primarily
 	}
 
 		private static void SetFileTag(ListedItem item)
@@ -1674,10 +1688,23 @@ namespace Files.App.ViewModels
 			itemLoadQueue[item.ItemPath] = false;
 
 			var cts = loadPropsCTS;
+			
+			// Check if CTS is already disposed
+			if (cts == null || cts.IsCancellationRequested)
+				return;
 
 			try
 			{
-				cts.Token.ThrowIfCancellationRequested();
+				// Use a try-catch to handle disposed CTS
+				try
+				{
+					cts.Token.ThrowIfCancellationRequested();
+				}
+				catch (ObjectDisposedException)
+				{
+					// CTS was disposed, exit gracefully
+					return;
+				}
 				if (itemLoadQueue.TryGetValue(item.ItemPath, out var canceled) && canceled)
 					return;
 
@@ -1699,16 +1726,29 @@ namespace Files.App.ViewModels
 
 					cts.Token.ThrowIfCancellationRequested();
 					// Use viewport thumbnail loader if available, otherwise fallback to direct loading
-					if (viewportThumbnailLoader != null)
+					try
 					{
-						await viewportThumbnailLoader.UpdateViewportAsync(
-							new[] { item }, 
-							(uint)LayoutSizeKindHelper.GetIconSize(folderSettings.LayoutMode), 
-							cts.Token);
+						if (viewportThumbnailLoader != null)
+						{
+							await viewportThumbnailLoader.UpdateViewportAsync(
+								new[] { item }, 
+								(uint)LayoutSizeKindHelper.GetIconSize(folderSettings.LayoutMode), 
+								cts.Token);
+						}
+						else
+						{
+							await LoadThumbnailDirectlyAsync(item, cts.Token);
+						}
 					}
-					else
+					catch (OperationCanceledException)
 					{
-						await LoadThumbnailDirectlyAsync(item, cts.Token);
+						// Expected during navigation
+						throw;
+					}
+					catch (Exception ex)
+					{
+						App.Logger?.LogError(ex, "Failed to load thumbnail for {Path}", item.ItemPath);
+						// Continue with other property loading even if thumbnail fails
 					}
 
 					cts.Token.ThrowIfCancellationRequested();
@@ -1847,46 +1887,101 @@ namespace Files.App.ViewModels
 				{
 					if (!wasSyncStatusLoaded)
 					{
-						cts.Token.ThrowIfCancellationRequested();
-						await FilesystemTasks.Wrap(async () =>
+						// Safely check cancellation to avoid ObjectDisposedException
+						bool shouldContinue = true;
+						try
 						{
-							var fileTag = FileTagsHelper.ReadFileTag(item.ItemPath);
-
-							await SafeEnqueueOrInvokeAsync(() =>
+							cts.Token.ThrowIfCancellationRequested();
+						}
+						catch (ObjectDisposedException)
+						{
+							// CTS was disposed, exit gracefully
+							shouldContinue = false;
+						}
+						
+						if (shouldContinue)
+						{
+							await FilesystemTasks.Wrap(async () =>
 							{
-								// Reset cloud sync status icon
-								item.SyncStatusUI = new CloudDriveSyncStatusUI();
+								var fileTag = FileTagsHelper.ReadFileTag(item.ItemPath);
 
-								item.FileTags = fileTag;
-							},
-							Microsoft.UI.Dispatching.DispatcherQueuePriority.Low);
+								await SafeEnqueueOrInvokeAsync(() =>
+								{
+									// Reset cloud sync status icon
+									item.SyncStatusUI = new CloudDriveSyncStatusUI();
 
-							SetFileTag(item);
-						});
+									item.FileTags = fileTag;
+								},
+								Microsoft.UI.Dispatching.DispatcherQueuePriority.Low);
+
+								SetFileTag(item);
+							});
+						}
 					}
 					else
 					{
 						// Try loading thumbnail for cloud files in case they weren't cached the first time
 						if (item.SyncStatusUI.SyncStatus != CloudDriveSyncStatus.NotSynced && item.SyncStatusUI.SyncStatus != CloudDriveSyncStatus.Unknown)
 						{
-							_ = Task.Run(async () =>
+							var cloudThumbnailTask = Task.Run(async () =>
 							{
-								await Task.Delay(500);
-								cts.Token.ThrowIfCancellationRequested();
-								await LoadThumbnailAsync(item, cts.Token);
+								try
+								{
+									await Task.Delay(500);
+									try
+									{
+										cts.Token.ThrowIfCancellationRequested();
+										await LoadThumbnailAsync(item, cts.Token);
+									}
+									catch (ObjectDisposedException)
+									{
+										// CTS was disposed, exit gracefully
+										return;
+									}
+								}
+								catch (OperationCanceledException)
+								{
+									// Expected during navigation
+								}
+								catch (Exception ex)
+								{
+									App.Logger?.LogError(ex, "Error loading cloud thumbnail for {Path}", item.ItemPath);
+								}
 							});
+
+							// Handle task exceptions properly
+							_ = cloudThumbnailTask.ContinueWith(task =>
+							{
+								if (task.IsFaulted)
+								{
+									App.Logger?.LogError(task.Exception, "Unhandled error in cloud thumbnail loading task for {Path}", item.ItemPath);
+								}
+							}, TaskScheduler.Default);
 						}
 					}
 
 					if (loadGroupHeaderInfo)
 					{
-						cts.Token.ThrowIfCancellationRequested();
-						await SafetyExtensions.IgnoreExceptions(() =>
-							SafeEnqueueOrInvokeAsync(() =>
-							{
-								gp.Model.ImageSource = groupImage;
-								gp.InitializeExtendedGroupHeaderInfoAsync();
-							}));
+						bool shouldContinue = true;
+						try
+						{
+							cts.Token.ThrowIfCancellationRequested();
+						}
+						catch (ObjectDisposedException)
+						{
+							// CTS was disposed, exit gracefully
+							shouldContinue = false;
+						}
+						
+						if (shouldContinue)
+						{
+							await SafetyExtensions.IgnoreExceptions(() =>
+								SafeEnqueueOrInvokeAsync(() =>
+								{
+									gp.Model.ImageSource = groupImage;
+									gp.InitializeExtendedGroupHeaderInfoAsync();
+								}));
+						}
 					}
 				}
 			}
@@ -2096,7 +2191,11 @@ namespace Files.App.ViewModels
 				// Only one instance at a time should access this function
 				// Wait here until the previous one has ended
 				// If we're waiting and a new update request comes through simply drop this instance
-				await enumFolderSemaphore.WaitAsync(semaphoreCTS.Token);
+				if (!await enumFolderSemaphore.WaitAsync(TimeSpan.FromSeconds(10), semaphoreCTS.Token))
+				{
+					App.Logger?.LogWarning("Timeout waiting for enumFolderSemaphore in RapidAddItemsToCollectionAsync");
+					return;
+				}
 			}
 			catch (OperationCanceledException)
 			{
@@ -3331,14 +3430,52 @@ namespace Files.App.ViewModels
 			await OrderFilesAndFoldersAsync().ConfigureAwait(false);
 			await ApplyFilesAndFoldersChangesAsync().ConfigureAwait(false);
 
+			// Load thumbnails for any remaining search results that weren't processed during search ticks
+			if (remainingItems.Count > 0)
+			{
+				App.Logger?.LogInformation($"Preparing {remainingItems.Count} remaining search results for viewport loading");
+				await PrepareSearchResultsForViewportLoadingAsync(remainingItems, searchCTS.Token);
+			}
+
 			App.Logger?.LogInformation($"Search complete, setting IsLoadingItems to false. Thread: {System.Threading.Thread.CurrentThread.ManagedThreadId}");
 			
 			// Ensure we're on the UI thread when updating loading status
-			await SafeEnqueueOrInvokeAsync(() =>
+			await SafeEnqueueOrInvokeAsync(async () =>
 			{
 				ItemLoadStatusChanged?.Invoke(this, new ItemLoadStatusChangedEventArgs() { Status = ItemLoadStatusChangedEventArgs.ItemLoadStatus.Complete });
 				IsLoadingItems = false;
 				App.Logger?.LogInformation($"IsLoadingItems set to false on UI thread");
+				
+				// Force a viewport update after search completes to ensure thumbnails load
+				// This is needed because search results might be visible but not trigger viewport updates
+				if (FilesAndFolders.Count > 0)
+				{
+					App.Logger?.LogInformation($"Forcing viewport update after search complete with {FilesAndFolders.Count} items");
+					
+					// TEMP: Add delay to ensure UI is ready
+					App.Logger?.LogDebug("[TEMP-DELAY] Waiting 300ms before viewport update to ensure UI is ready");
+					await Task.Delay(300);
+					
+					// Get the first batch of items that would be visible
+					var initialBatch = FilesAndFolders.Take(50).ToList(); // Reasonable number for initial viewport
+					
+					// Trigger viewport update
+					try
+					{
+						await UpdateViewportAsync(initialBatch, CancellationToken.None);
+						App.Logger?.LogInformation($"Viewport update triggered successfully for {initialBatch.Count} items");
+						
+						// TEMP: Trigger again after a delay to catch any missed items
+						App.Logger?.LogDebug("[TEMP-DELAY] Scheduling second viewport update in 500ms");
+						await Task.Delay(500);
+						await UpdateViewportAsync(initialBatch, CancellationToken.None);
+						App.Logger?.LogDebug("[TEMP-DELAY] Second viewport update completed");
+					}
+					catch (Exception ex)
+					{
+						App.Logger?.LogError(ex, "Failed to trigger viewport update after search");
+					}
+				}
 			});
 		}
 
@@ -3347,9 +3484,18 @@ namespace Files.App.ViewModels
 			if (searchCTS != null)
 			{
 				App.Logger?.LogInformation("Cancelling previous search");
-				searchCTS.Cancel();
+				try
+				{
+					searchCTS.Cancel();
+				}
+				catch (ObjectDisposedException)
+				{
+					// Already disposed, ignore
+				}
 			}
 		}
+
+
 
 		/// <summary>
 		/// Updates the viewport with currently visible items to prioritize their thumbnail loading
@@ -3358,17 +3504,60 @@ namespace Files.App.ViewModels
 		/// <param name="cancellationToken">Cancellation token</param>
 		public async Task UpdateViewportAsync(IEnumerable<ListedItem> visibleItems, CancellationToken cancellationToken = default)
 		{
+			var itemCount = visibleItems?.Count() ?? 0;
+			App.Logger?.LogInformation($"[VIEWPORT] UpdateViewportAsync called with {itemCount} items. IsSearchResults: {IsSearchResults}, Thread: {System.Threading.Thread.CurrentThread.ManagedThreadId}");
+			
 			if (viewportThumbnailLoader == null)
+			{
+				App.Logger?.LogWarning("[VIEWPORT] ViewportThumbnailLoader is null, cannot update viewport");
 				return;
+			}
 
 			try
 			{
-				var thumbnailSize = (uint)LayoutSizeKindHelper.GetIconSize(folderSettings.LayoutMode);
-				await viewportThumbnailLoader.UpdateViewportAsync(visibleItems, thumbnailSize, cancellationToken);
+				// Ensure we're on a background thread to avoid blocking UI
+				await Task.Run(async () =>
+				{
+					// Convert to list and deduplicate by path
+					var uniqueItems = visibleItems
+						.Where(item => item != null && !string.IsNullOrEmpty(item.ItemPath))
+						.GroupBy(item => item.ItemPath)
+						.Select(group => group.First())
+						.ToList();
+
+					if (uniqueItems.Count == 0)
+						return;
+
+					App.Logger?.LogInformation($"[VIEWPORT] Updating viewport with {uniqueItems.Count} unique items. First 3 paths: {string.Join(", ", uniqueItems.Take(3).Select(i => Path.GetFileName(i.ItemPath)))}");
+
+					// Prioritize items that don't have thumbnails yet
+					var priorityItems = uniqueItems
+						.Where(item => item.FileImage == null && !item.ItemPropertiesInitialized)
+						.Take(10) // Reduce to 10 to prevent overwhelming
+						.ToList();
+					
+					App.Logger?.LogDebug($"[VIEWPORT] Found {priorityItems.Count} priority items without thumbnails");
+
+					if (priorityItems.Count > 0)
+					{
+						var thumbnailSize = (uint)LayoutSizeKindHelper.GetIconSize(folderSettings.LayoutMode);
+						
+						// Ensure thumbnails are loaded with proper size, not just icons
+						if (thumbnailSize < 48)
+							thumbnailSize = 48; // Force minimum thumbnail size
+						
+						await viewportThumbnailLoader.UpdateViewportAsync(priorityItems, thumbnailSize, cancellationToken);
+						App.Logger?.LogDebug($"[VIEWPORT] Viewport update completed for priority items");
+					}
+				}, cancellationToken);
+			}
+			catch (OperationCanceledException)
+			{
+				// Expected during rapid scrolling
 			}
 			catch (Exception ex)
 			{
-				App.Logger?.LogDebug(ex, "Failed to update viewport for thumbnail loading");
+				App.Logger?.LogDebug(ex, "Error updating viewport for thumbnail loading");
 			}
 		}
 
@@ -3403,23 +3592,39 @@ namespace Files.App.ViewModels
 
 		public void UpdateDateDisplay(bool isFormatChange)
 		{
-			_ = Task.Run(async () =>
+			var dateUpdateTask = Task.Run(async () =>
 			{
-				await Task.WhenAll(filesAndFolders.Select(async item =>
+				try
 				{
-					// Reassign values to update date display
-					if (isFormatChange || IsDateDiff(item.ItemDateAccessedReal))
-						await SafeEnqueueOrInvokeAsync(() => item.ItemDateAccessedReal = item.ItemDateAccessedReal).ConfigureAwait(false);
-					if (isFormatChange || IsDateDiff(item.ItemDateCreatedReal))
-						await SafeEnqueueOrInvokeAsync(() => item.ItemDateCreatedReal = item.ItemDateCreatedReal).ConfigureAwait(false);
-					if (isFormatChange || IsDateDiff(item.ItemDateModifiedReal))
-						await SafeEnqueueOrInvokeAsync(() => item.ItemDateModifiedReal = item.ItemDateModifiedReal).ConfigureAwait(false);
-					if (item is RecycleBinItem recycleBinItem && (isFormatChange || IsDateDiff(recycleBinItem.ItemDateDeletedReal)))
-						await SafeEnqueueOrInvokeAsync(() => recycleBinItem.ItemDateDeletedReal = recycleBinItem.ItemDateDeletedReal).ConfigureAwait(false);
-					if (item is IGitItem gitItem && gitItem.GitLastCommitDate is DateTimeOffset offset && (isFormatChange || IsDateDiff(offset)))
-						await SafeEnqueueOrInvokeAsync(() => gitItem.GitLastCommitDate = gitItem.GitLastCommitDate).ConfigureAwait(false);
-				})).ConfigureAwait(false);
+					await Task.WhenAll(filesAndFolders.Select(async item =>
+					{
+						// Reassign values to update date display
+						if (isFormatChange || IsDateDiff(item.ItemDateAccessedReal))
+							await SafeEnqueueOrInvokeAsync(() => item.ItemDateAccessedReal = item.ItemDateAccessedReal).ConfigureAwait(false);
+						if (isFormatChange || IsDateDiff(item.ItemDateCreatedReal))
+							await SafeEnqueueOrInvokeAsync(() => item.ItemDateCreatedReal = item.ItemDateCreatedReal).ConfigureAwait(false);
+						if (isFormatChange || IsDateDiff(item.ItemDateModifiedReal))
+							await SafeEnqueueOrInvokeAsync(() => item.ItemDateModifiedReal = item.ItemDateModifiedReal).ConfigureAwait(false);
+						if (item is RecycleBinItem recycleBinItem && (isFormatChange || IsDateDiff(recycleBinItem.ItemDateDeletedReal)))
+							await SafeEnqueueOrInvokeAsync(() => recycleBinItem.ItemDateDeletedReal = recycleBinItem.ItemDateDeletedReal).ConfigureAwait(false);
+						if (item is IGitItem gitItem && gitItem.GitLastCommitDate is DateTimeOffset offset && (isFormatChange || IsDateDiff(offset)))
+							await SafeEnqueueOrInvokeAsync(() => gitItem.GitLastCommitDate = gitItem.GitLastCommitDate).ConfigureAwait(false);
+					})).ConfigureAwait(false);
+				}
+				catch (Exception ex)
+				{
+					App.Logger?.LogError(ex, "Error updating date display");
+				}
 			});
+
+			// Handle task exceptions properly
+			_ = dateUpdateTask.ContinueWith(task =>
+			{
+				if (task.IsFaulted)
+				{
+					App.Logger?.LogError(task.Exception, "Unhandled error in date update task");
+				}
+			}, TaskScheduler.Default);
 		}
 
 		private static bool IsDateDiff(DateTimeOffset offset) => (DateTimeOffset.Now - offset).TotalDays < 7;
@@ -3436,10 +3641,100 @@ namespace Files.App.ViewModels
 			folderSizeProvider.SizeChanged -= FolderSizeProvider_SizeChanged;
 			folderSettings.LayoutModeChangeRequested -= LayoutModeChangeRequested;
 			
+			// Dispose all semaphores to prevent resource leaks
+			enumFolderSemaphore?.Dispose();
+			getFileOrFolderSemaphore?.Dispose();
+			bulkOperationSemaphore?.Dispose();
+			loadThumbnailSemaphore?.Dispose();
+			applyChangesSemaphore?.Dispose();
+			
+			// Dispose cancellation token sources
+			addFilesCTS?.Dispose();
+			semaphoreCTS?.Dispose();
+			loadPropsCTS?.Dispose();
+			watcherCTS?.Dispose();
+			searchCTS?.Dispose();
+			updateTagGroupCTS?.Dispose();
+			applyChangesCTS?.Dispose();
+			
+			// Note: AsyncManualResetEvent doesn't implement IDisposable, so no disposal needed
+			
+			// Stop and dispose debounce timer
+			applyChangesDebounceTimer?.Stop();
+			
 			// Clean up viewport thumbnail loader
 			if (viewportThumbnailLoader is IDisposable disposableLoader)
 			{
 				disposableLoader.Dispose();
+			}
+		}
+
+		/// <summary>
+		/// Prepares search results for viewport-based thumbnail loading (no bulk loading)
+		/// </summary>
+		private async Task PrepareSearchResultsForViewportLoadingAsync(List<ListedItem> searchResults, CancellationToken cancellationToken)
+		{
+			if (searchResults == null || searchResults.Count == 0)
+				return;
+
+			try
+			{
+				App.Logger?.LogInformation($"[SEARCH-PREP] Preparing {searchResults.Count} search results for viewport-based loading");
+				
+				// Log sample of items before modification
+				if (searchResults.Count > 0)
+				{
+					var sample = searchResults.First();
+					App.Logger?.LogDebug($"[SEARCH-PREP] Sample item before: Path={sample.ItemPath}, LoadFileIcon={sample.LoadFileIcon}, HasThumbnail={sample.FileImage != null}, NeedsPlaceholder={sample.NeedsPlaceholderGlyph}");
+				}
+				
+				// Simply ensure all items are properly configured for viewport-based loading
+				// Don't set LoadFileIcon=true to avoid triggering individual loads
+				await Task.Run(() =>
+				{
+					foreach (var item in searchResults)
+					{
+						if (cancellationToken.IsCancellationRequested)
+							break;
+							
+						try
+						{
+							// Ensure item is ready for loading
+							// IMPORTANT: Keep LoadFileIcon=true from search service to allow hybrid loading
+							// The viewport system will handle batch loading, but individual items can still load if needed
+							if (!item.LoadFileIcon)
+							{
+								item.LoadFileIcon = true; // Enable thumbnail loading
+							}
+							
+							// Don't reset ItemPropertiesInitialized or NeedsPlaceholderGlyph
+							// Let the natural loading process handle these
+							
+							// Don't clear existing thumbnails - they might be cached
+						}
+						catch (Exception ex)
+						{
+							App.Logger?.LogDebug(ex, "Error preparing item {Path} for viewport loading", item.ItemPath);
+						}
+					}
+				}, cancellationToken);
+				
+				// Log sample of items after modification
+				if (searchResults.Count > 0)
+				{
+					var sample = searchResults.First();
+					App.Logger?.LogDebug($"[SEARCH-PREP] Sample item after: Path={sample.ItemPath}, LoadFileIcon={sample.LoadFileIcon}, HasThumbnail={sample.FileImage != null}, NeedsPlaceholder={sample.NeedsPlaceholderGlyph}");
+				}
+				
+				App.Logger?.LogInformation($"[SEARCH-PREP] Prepared {searchResults.Count} search results for viewport loading");
+			}
+			catch (OperationCanceledException)
+			{
+				App.Logger?.LogInformation("Search result preparation was cancelled");
+			}
+			catch (Exception ex)
+			{
+				App.Logger?.LogError(ex, "Error preparing search results for viewport loading");
 			}
 		}
 	}

@@ -319,24 +319,26 @@ public sealed partial class SystemStorageFolder : BaseStorageFolder
 					return null;
 				}
 
-				// Add a final safety check for paths that might cause 0xC000027B
-				if (path.Contains(".git", StringComparison.OrdinalIgnoreCase))
+				// Enhanced safety check for paths that might cause 0xC000027B
+				if (IsLikelyToTriggerStorageApiException(path))
 				{
-					App.Logger?.LogInformation("Skipping Git-related path that may cause COM exception {Path}", path);
-					return null;
-				}
-				
-				// Also skip paths ending with .git (bare repositories)
-				if (path.EndsWith(".git", StringComparison.OrdinalIgnoreCase))
-				{
-					App.Logger?.LogInformation("Skipping bare Git repository that may cause COM exception {Path}", path);
+					App.Logger?.LogInformation("Skipping path that may cause StorageFolder API exception {Path}", path);
 					return null;
 				}
 
 				StorageFolder? folder;
+				// Add timeout to prevent hanging on problematic paths
+				using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+				using var combinedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+				
 				try
 				{
-					folder = await StorageFolder.GetFolderFromPathAsync(path).AsTask().ConfigureAwait(false);
+					folder = await StorageFolder.GetFolderFromPathAsync(path).AsTask(combinedCts.Token).ConfigureAwait(false);
+				}
+				catch (OperationCanceledException) when (timeoutCts.Token.IsCancellationRequested)
+				{
+					App.Logger?.LogWarning("StorageFolder API timeout for path {Path}", path);
+					return null;
 				}
 				catch (System.Runtime.InteropServices.COMException comEx) when (comEx.HResult == unchecked((int)0xC000027B))
 				{
@@ -358,6 +360,100 @@ public sealed partial class SystemStorageFolder : BaseStorageFolder
 				return null;
 			}
 		});
+	}
+
+	/// <summary>
+	/// Enhanced check for paths that are likely to trigger Windows Storage API exceptions.
+	/// This includes broader pattern matching and heuristics to catch problematic paths.
+	/// </summary>
+	private static bool IsLikelyToTriggerStorageApiException(string path)
+	{
+		try
+		{
+			// Check for Git-related paths (existing check)
+			if (path.Contains(".git", StringComparison.OrdinalIgnoreCase) || 
+				path.EndsWith(".git", StringComparison.OrdinalIgnoreCase))
+			{
+				return true;
+			}
+
+			// Check for paths that contain development/project-related keywords that often cause issues
+			var problematicKeywords = new[]
+			{
+				"node_modules", "target", "build", "dist", "out", "bin", "obj",
+				".vs", ".vscode", ".idea", ".gradle", ".m2", ".nuget",
+				"__pycache__", ".pytest_cache", ".mypy_cache", ".tox",
+				"vendor", "packages", "deps", "dependencies",
+				"temp", "tmp", "cache", ".cache", ".temp"
+			};
+
+			var pathSegments = path.Split(System.IO.Path.DirectorySeparatorChar, System.IO.Path.AltDirectorySeparatorChar);
+			foreach (var segment in pathSegments)
+			{
+				if (problematicKeywords.Any(keyword => 
+					string.Equals(segment, keyword, StringComparison.OrdinalIgnoreCase) ||
+					segment.StartsWith(keyword + ".", StringComparison.OrdinalIgnoreCase)))
+				{
+					return true;
+				}
+			}
+
+			// Check for very deep paths (more than 15 levels) which can cause issues
+			if (pathSegments.Length > 15)
+			{
+				App.Logger?.LogInformation("Skipping very deep path {Path} with {Depth} levels", path, pathSegments.Length);
+				return true;
+			}
+
+			// Check for paths with very long names (individual segments > 100 characters)
+			if (pathSegments.Any(segment => segment.Length > 100))
+			{
+				return true;
+			}
+
+			// Check if path contains special characters that might cause issues
+			var fileName = System.IO.Path.GetFileName(path);
+			if (!string.IsNullOrEmpty(fileName))
+			{
+				// Check for unusual characters that might cause COM exceptions
+				var problematicChars = new[] { '[', ']', '{', '}', '|', '<', '>', '?', '*', '"' };
+				if (fileName.IndexOfAny(problematicChars) >= 0)
+				{
+					return true;
+				}
+
+				// Check for names that are all numbers or very short cryptic names
+				if (fileName.All(char.IsDigit) || (fileName.Length <= 3 && fileName.All(char.IsLower)))
+				{
+					return true;
+				}
+			}
+
+			// Check for paths under program files or system directories that often have restrictions
+			var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+			var programFilesX86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+			var windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+			
+			if (path.StartsWith(programFiles, StringComparison.OrdinalIgnoreCase) ||
+				path.StartsWith(programFilesX86, StringComparison.OrdinalIgnoreCase) ||
+				path.StartsWith(windows, StringComparison.OrdinalIgnoreCase))
+			{
+				// Allow only specific safe subdirectories
+				var safeProgramSubdirs = new[] { "WindowsPowerShell", "Microsoft", "Common Files" };
+				if (!safeProgramSubdirs.Any(safe => path.Contains(System.IO.Path.Combine(programFiles, safe), StringComparison.OrdinalIgnoreCase) ||
+												   path.Contains(System.IO.Path.Combine(programFilesX86, safe), StringComparison.OrdinalIgnoreCase)))
+				{
+					return true;
+				}
+			}
+
+			return false;
+		}
+		catch (Exception ex)
+		{
+			App.Logger?.LogWarning(ex, "Exception in IsLikelyToTriggerStorageApiException for path {Path}", path);
+			return true; // If we can't safely check, assume it's problematic
+		}
 	}
 
 	public override IAsyncOperation<StorageFolder> ToStorageFolderAsync() => Task.FromResult(Folder).AsAsyncOperation();

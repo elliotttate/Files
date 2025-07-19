@@ -17,8 +17,12 @@ namespace Files.App.Utils
 		public FilesystemItemType ItemType => FilesystemItemType.File;
 
 		public StorageFileWithPath(BaseStorageFile file)
-			: this(file, file.Path) { }
+			: this(file, file?.Path) { }
 		public StorageFileWithPath(BaseStorageFile file, string path)
-			=> (Item, Path) = (file, path);
+		{
+			if (file == null)
+				throw new ArgumentNullException(nameof(file));
+			(Item, Path) = (file, path);
+		}
 	}
 }

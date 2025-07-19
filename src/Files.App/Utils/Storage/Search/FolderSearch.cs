@@ -498,7 +498,7 @@ namespace Files.App.Utils.Storage
 			{
 				App.Logger?.LogInformation("FolderSearch: Deferring icon load for {Path}, isFolder={IsFolder}", listedItem.ItemPath, isFolder);
 				// Just mark that we want to load the icon later, don't load it now
-				listedItem.LoadFileIcon = true;
+				listedItem.LoadFileIcon = true;  // Enable thumbnail loading with hybrid approach
 				listedItem.NeedsPlaceholderGlyph = true;
 			}
 			else
@@ -606,7 +606,7 @@ namespace Files.App.Utils.Storage
 			{
 				App.Logger?.LogInformation("FolderSearch: Deferring icon load for storage item {Path}", item.Path);
 				// Just mark that we want to load the icon later, don't load it now
-				listedItem.LoadFileIcon = true;
+				listedItem.LoadFileIcon = true;  // Enable thumbnail loading with hybrid approach
 				listedItem.NeedsPlaceholderGlyph = true;
 			}
 			else

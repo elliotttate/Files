@@ -333,7 +333,7 @@ namespace Files.App.Data.Items
 			{
 				var result = await FileThumbnailHelper.GetIconAsync(
 					DeviceID,
-					Constants.ShellIconSizes.Small,
+					Constants.ShellIconSizes.Large,
 					false,
 					IconOptions.ReturnIconOnly | IconOptions.UseCurrentScale);
 

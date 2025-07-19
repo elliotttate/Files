@@ -16,26 +16,26 @@ namespace Files.App.Helpers
 		{
 			return folderLayoutMode switch
 			{
-				// Details
-				FolderLayoutModes.DetailsView when LayoutSettingsService.DetailsViewSize == DetailsViewSizeKind.Compact => Constants.ShellIconSizes.Small,
-				FolderLayoutModes.DetailsView when LayoutSettingsService.DetailsViewSize == DetailsViewSizeKind.Small => Constants.ShellIconSizes.Small,
-				FolderLayoutModes.DetailsView when LayoutSettingsService.DetailsViewSize == DetailsViewSizeKind.Medium => 20,
-				FolderLayoutModes.DetailsView when LayoutSettingsService.DetailsViewSize == DetailsViewSizeKind.Large => 24,
-				FolderLayoutModes.DetailsView when LayoutSettingsService.DetailsViewSize == DetailsViewSizeKind.ExtraLarge => Constants.ShellIconSizes.Large,
+				// Details - Use minimum 24px instead of 16px for better quality
+				FolderLayoutModes.DetailsView when LayoutSettingsService.DetailsViewSize == DetailsViewSizeKind.Compact => 24,
+				FolderLayoutModes.DetailsView when LayoutSettingsService.DetailsViewSize == DetailsViewSizeKind.Small => 24,
+				FolderLayoutModes.DetailsView when LayoutSettingsService.DetailsViewSize == DetailsViewSizeKind.Medium => 28,
+				FolderLayoutModes.DetailsView when LayoutSettingsService.DetailsViewSize == DetailsViewSizeKind.Large => Constants.ShellIconSizes.Large,
+				FolderLayoutModes.DetailsView when LayoutSettingsService.DetailsViewSize == DetailsViewSizeKind.ExtraLarge => Constants.ShellIconSizes.ExtraLarge,
 
-				// List
-				FolderLayoutModes.ListView when LayoutSettingsService.ListViewSize == ListViewSizeKind.Compact => Constants.ShellIconSizes.Small,
-				FolderLayoutModes.ListView when LayoutSettingsService.ListViewSize == ListViewSizeKind.Small => Constants.ShellIconSizes.Small,
-				FolderLayoutModes.ListView when LayoutSettingsService.ListViewSize == ListViewSizeKind.Medium => 20,
-				FolderLayoutModes.ListView when LayoutSettingsService.ListViewSize == ListViewSizeKind.Large => 24,
-				FolderLayoutModes.ListView when LayoutSettingsService.ListViewSize == ListViewSizeKind.ExtraLarge => Constants.ShellIconSizes.Large,
+				// List - Use minimum 24px instead of 16px for better quality
+				FolderLayoutModes.ListView when LayoutSettingsService.ListViewSize == ListViewSizeKind.Compact => 24,
+				FolderLayoutModes.ListView when LayoutSettingsService.ListViewSize == ListViewSizeKind.Small => 24,
+				FolderLayoutModes.ListView when LayoutSettingsService.ListViewSize == ListViewSizeKind.Medium => 28,
+				FolderLayoutModes.ListView when LayoutSettingsService.ListViewSize == ListViewSizeKind.Large => Constants.ShellIconSizes.Large,
+				FolderLayoutModes.ListView when LayoutSettingsService.ListViewSize == ListViewSizeKind.ExtraLarge => Constants.ShellIconSizes.ExtraLarge,
 
-				// Columns
-				FolderLayoutModes.ColumnView when LayoutSettingsService.ColumnsViewSize == ColumnsViewSizeKind.Compact => Constants.ShellIconSizes.Small,
-				FolderLayoutModes.ColumnView when LayoutSettingsService.ColumnsViewSize == ColumnsViewSizeKind.Small => Constants.ShellIconSizes.Small,
-				FolderLayoutModes.ColumnView when LayoutSettingsService.ColumnsViewSize == ColumnsViewSizeKind.Medium => 20,
-				FolderLayoutModes.ColumnView when LayoutSettingsService.ColumnsViewSize == ColumnsViewSizeKind.Large => 24,
-				FolderLayoutModes.ColumnView when LayoutSettingsService.ColumnsViewSize == ColumnsViewSizeKind.ExtraLarge => Constants.ShellIconSizes.Large,
+				// Columns - Use minimum 24px instead of 16px for better quality
+				FolderLayoutModes.ColumnView when LayoutSettingsService.ColumnsViewSize == ColumnsViewSizeKind.Compact => 24,
+				FolderLayoutModes.ColumnView when LayoutSettingsService.ColumnsViewSize == ColumnsViewSizeKind.Small => 24,
+				FolderLayoutModes.ColumnView when LayoutSettingsService.ColumnsViewSize == ColumnsViewSizeKind.Medium => 28,
+				FolderLayoutModes.ColumnView when LayoutSettingsService.ColumnsViewSize == ColumnsViewSizeKind.Large => Constants.ShellIconSizes.Large,
+				FolderLayoutModes.ColumnView when LayoutSettingsService.ColumnsViewSize == ColumnsViewSizeKind.ExtraLarge => Constants.ShellIconSizes.ExtraLarge,
 
 				// Card
 				FolderLayoutModes.CardsView when LayoutSettingsService.CardsViewSize == CardsViewSizeKind.Small => 64,

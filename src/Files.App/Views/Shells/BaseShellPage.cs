@@ -381,8 +381,10 @@ namespace Files.App.Views.Shells
 				return;
 
 			// Cancel any previous pending filter operation
-			_filterDebounceTokenSource?.Cancel();
+			var oldTokenSource = _filterDebounceTokenSource;
 			_filterDebounceTokenSource = new CancellationTokenSource();
+			oldTokenSource?.Cancel();
+			oldTokenSource?.Dispose();
 			var cancellationToken = _filterDebounceTokenSource.Token;
 
 			if (sender.IsFilterMode)

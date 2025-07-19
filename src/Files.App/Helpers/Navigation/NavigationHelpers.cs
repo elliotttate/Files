@@ -172,14 +172,14 @@ namespace Files.App.Helpers
 
 				if (imageSource is null)
 				{
-					var result = await FileThumbnailHelper.GetIconAsync(
-						path,
-						Constants.ShellIconSizes.Small,
-						true,
-						IconOptions.ReturnIconOnly | IconOptions.UseCurrentScale);
+									var result = await FileThumbnailHelper.GetIconAsync(
+					path,
+					Constants.ShellIconSizes.Large,
+					true,
+					IconOptions.ReturnIconOnly | IconOptions.UseCurrentScale);
 
-					if (result is not null)
-						imageSource = await result.ToBitmapAsync();
+				if (result is not null)
+					imageSource = await result.ToBitmapAsync();
 				}
 			}
 
@@ -553,7 +553,7 @@ namespace Files.App.Helpers
 					.OnSuccess((childFolder) =>
 					{
 						// Add location to Recent Items List
-						if (childFolder.Item is SystemStorageFolder)
+						if (childFolder?.Item is SystemStorageFolder && !string.IsNullOrEmpty(childFolder.Path))
 							WindowsRecentItemsService.Add(childFolder.Path);
 					});
 				if (!opened)

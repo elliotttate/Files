@@ -46,7 +46,7 @@ namespace Files.App.Data.Items
 		/// <returns></returns>
 		public async Task LoadRecentItemIconAsync()
 		{
-			var result = await FileThumbnailHelper.GetIconAsync(Path, Constants.ShellIconSizes.Small, false, IconOptions.UseCurrentScale);
+			var result = await FileThumbnailHelper.GetIconAsync(Path, Constants.ShellIconSizes.Large, false, IconOptions.UseCurrentScale);
 
 			var bitmapImage = await result.ToBitmapAsync();
 			if (bitmapImage is not null)

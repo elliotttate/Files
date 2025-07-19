@@ -36,6 +36,13 @@ namespace Files.App.Utils.Storage
 			{
 				try
 				{
+					// Check for problematic paths that can cause XAML reentrancy crashes
+					if (IsProblematicPath(path))
+					{
+						App.Logger?.LogDebug($"Skipping problematic file path: {path}");
+						return null;
+					}
+					
 					var file = await StorageFile.GetFileFromPathAsync(path);
 					return new SystemStorageFile(file);
 				}
@@ -224,6 +231,73 @@ namespace Files.App.Utils.Storage
 				=> basicProps.SavePropertiesAsync();
 			public override IAsyncAction SavePropertiesAsync([HasVariant] IEnumerable<KeyValuePair<string, object>> propertiesToSave)
 				=> basicProps.SavePropertiesAsync(propertiesToSave);
+		}
+		
+		/// <summary>
+		/// Checks if a path is known to cause crashes or should be avoided
+		/// </summary>
+		private static bool IsProblematicPath(string path)
+		{
+			if (string.IsNullOrWhiteSpace(path))
+				return true;
+
+			// Known problematic paths that can cause XAML framework crashes
+			var problematicPaths = new[]
+			{
+				@"\.git\",        // Git directories
+				@"\.github\",     // GitHub directories
+				@"\.svn\",        // SVN directories  
+				@"\.hg\",         // Mercurial directories
+				@"\.bzr\",        // Bazaar directories
+				@"\$Recycle.Bin\", // Recycle bin
+				@"\System Volume Information\", // System volume info
+				@"\DumpStack.log.tmp\", // Crash dump files
+				@"\hiberfil.sys\", // Hibernation file
+				@"\pagefile.sys\", // Page file
+				@"\swapfile.sys\", // Swap file
+				@"\Config.Msi\",   // Windows installer temp
+			};
+			
+			// Also check for paths ending with .git (bare repositories)
+			if (path.EndsWith(".git", StringComparison.OrdinalIgnoreCase))
+			{
+				return true;
+			}
+
+			// Check for problematic path patterns
+			foreach (var problematicPath in problematicPaths)
+			{
+				if (path.Contains(problematicPath, StringComparison.OrdinalIgnoreCase))
+					return true;
+			}
+
+			// Check for system-protected files
+			try
+			{
+				var fileInfo = new System.IO.FileInfo(path);
+				if (fileInfo.Exists && 
+					(fileInfo.Attributes.HasFlag(IO.FileAttributes.System) ||
+					 fileInfo.Attributes.HasFlag(IO.FileAttributes.Hidden)))
+				{
+					// Allow some common hidden files that are usually safe
+					var safeFiles = new[]
+					{
+						@"\desktop.ini",
+						@"\.gitignore",
+						@"\.gitattributes"
+					};
+
+					if (!safeFiles.Any(safeFile => path.EndsWith(safeFile, StringComparison.OrdinalIgnoreCase)))
+						return true;
+				}
+			}
+			catch
+			{
+				// If we can't check the file attributes, assume it might be problematic
+				return true;
+			}
+
+			return false;
 		}
 	}
 }

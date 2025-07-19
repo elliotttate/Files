@@ -6,6 +6,7 @@ using Files.App.Data.Contracts;
 using Files.App.Extensions;
 using Files.App.Utils;
 using Files.App.Utils.Storage;
+using Microsoft.Extensions.Logging;
 using Microsoft.UI.Xaml.Media.Imaging;
 using System.Collections.Concurrent;
 using System.Diagnostics;
@@ -24,7 +25,7 @@ namespace Files.App.Services.Caching
 	{
 		// Cache dictionaries
 		private readonly ConcurrentDictionary<string, CachedFileModel> _fileModelCache = new(StringComparer.OrdinalIgnoreCase);
-		private readonly ConcurrentDictionary<string, BitmapImage> _thumbnailCache = new(StringComparer.OrdinalIgnoreCase);
+		private readonly ConcurrentDictionary<string, CachedThumbnail> _thumbnailCache = new(StringComparer.OrdinalIgnoreCase);
 		private readonly ConcurrentDictionary<string, MediaProperties> _mediaPropertiesCache = new(StringComparer.OrdinalIgnoreCase);
 
 		// Thumbnail loading queue with priority support
@@ -65,12 +66,12 @@ namespace Files.App.Services.Caching
 			// Start thumbnail processing task
 			_thumbnailProcessingTask = Task.Run(ProcessThumbnailQueueAsync);
 
-			// Start periodic cache cleanup
+			// Start periodic cache cleanup (more frequent)
 			_cacheCleanupTimer = new Timer(
 				PerformPeriodicCleanup,
 				null,
-				TimeSpan.FromMinutes(5),
-				TimeSpan.FromMinutes(5));
+				TimeSpan.FromMinutes(2), // Initial delay
+				TimeSpan.FromMinutes(2)); // Run every 2 minutes instead of 5
 
 			// Start UI update batching timer
 			_uiUpdateTimer = new Timer(
@@ -149,7 +150,14 @@ namespace Files.App.Services.Caching
 			if (string.IsNullOrEmpty(path))
 				return null;
 
-			return _thumbnailCache.TryGetValue(path, out var thumbnail) ? thumbnail : null;
+			if (_thumbnailCache.TryGetValue(path, out var cached))
+			{
+				// Update last access time
+				cached.LastAccessTime = DateTime.UtcNow;
+				return cached.Thumbnail;
+			}
+			
+			return null;
 		}
 
 		public void AddOrUpdateThumbnail(string path, BitmapImage thumbnail)
@@ -157,7 +165,22 @@ namespace Files.App.Services.Caching
 			if (string.IsNullOrEmpty(path) || thumbnail == null)
 				return;
 
-			_thumbnailCache.AddOrUpdate(path, thumbnail, (key, existing) => thumbnail);
+			var cachedThumbnail = new CachedThumbnail
+			{
+				Thumbnail = thumbnail,
+				LastAccessTime = DateTime.UtcNow,
+				SizeInBytes = EstimateBitmapSize(thumbnail)
+			};
+			
+			_thumbnailCache.AddOrUpdate(path, cachedThumbnail, (key, existing) => 
+			{
+				// Update cache size tracking
+				UpdateCacheSize(-existing.SizeInBytes);
+				UpdateCacheSize(cachedThumbnail.SizeInBytes);
+				return cachedThumbnail;
+			});
+			
+			UpdateCacheSize(cachedThumbnail.SizeInBytes);
 			
 			// Update the ListedItem if it exists
 			if (_fileModelCache.TryGetValue(path, out var cachedModel))
@@ -274,20 +297,42 @@ namespace Files.App.Services.Caching
 			if (currentSize <= targetSizeInBytes)
 				return 0;
 
-			// Get items sorted by last access time (oldest first)
-			var itemsToRemove = _fileModelCache
+			// First, clean up thumbnails (they typically use more memory)
+			var thumbnailsToRemove = _thumbnailCache
 				.OrderBy(kvp => kvp.Value.LastAccessTime)
+				.Take(_thumbnailCache.Count / 3) // Remove oldest 33% of thumbnails
 				.ToList();
-
-			foreach (var kvp in itemsToRemove)
+				
+			foreach (var kvp in thumbnailsToRemove)
 			{
 				if (currentSize <= targetSizeInBytes)
 					break;
-
-				if (RemoveItem(kvp.Key))
+					
+				if (_thumbnailCache.TryRemove(kvp.Key, out var removed))
 				{
+					UpdateCacheSize(-removed.SizeInBytes);
 					itemsRemoved++;
 					currentSize = GetCacheSizeInBytes();
+				}
+			}
+
+			// Then clean up file models if needed
+			if (currentSize > targetSizeInBytes)
+			{
+				var itemsToRemove = _fileModelCache
+					.OrderBy(kvp => kvp.Value.LastAccessTime)
+					.ToList();
+
+				foreach (var kvp in itemsToRemove)
+				{
+					if (currentSize <= targetSizeInBytes)
+						break;
+
+					if (RemoveItem(kvp.Key))
+					{
+						itemsRemoved++;
+						currentSize = GetCacheSizeInBytes();
+					}
 				}
 			}
 
@@ -661,17 +706,53 @@ namespace Files.App.Services.Caching
 		{
 			return string.IsNullOrEmpty(str) ? 0 : str.Length * 2 + 24;
 		}
+		
+		private long EstimateBitmapSize(BitmapImage bitmap)
+		{
+			if (bitmap == null)
+				return 0;
+				
+			try
+			{
+				// Estimate based on pixel dimensions if available
+				if (bitmap.PixelWidth > 0 && bitmap.PixelHeight > 0)
+				{
+					// Assume 4 bytes per pixel (RGBA) plus object overhead
+					return (long)(bitmap.PixelWidth * bitmap.PixelHeight * 4) + 256;
+				}
+			}
+			catch (System.Runtime.InteropServices.COMException ex) when (ex.HResult == unchecked((int)0x8001010E))
+			{
+				// RPC_E_WRONG_THREAD - Can't access BitmapImage properties from this thread
+				// Fall through to default estimate
+				App.Logger?.LogDebug("EstimateBitmapSize: Cannot access BitmapImage properties from background thread, using default estimate");
+			}
+			catch (Exception ex)
+			{
+				App.Logger?.LogWarning(ex, "EstimateBitmapSize: Error accessing BitmapImage properties");
+			}
+			
+			// Default estimate for thumbnails (48x48 pixels * 4 bytes)
+			return 48 * 48 * 4 + 256;
+		}
 
 		private void PerformPeriodicCleanup(object state)
 		{
 			var currentSize = GetCacheSizeInBytes();
 			var threshold = DEFAULT_MAX_CACHE_SIZE * CLEANUP_THRESHOLD_PERCENTAGE / 100;
 			
+			// More aggressive cleanup
 			if (currentSize > threshold)
 			{
-				var targetSize = DEFAULT_MAX_CACHE_SIZE * 70 / 100; // Reduce to 70% of max
+				var targetSize = DEFAULT_MAX_CACHE_SIZE * 50 / 100; // Reduce to 50% of max (more aggressive)
 				var removed = PerformCacheCleanup(targetSize);
-				Debug.WriteLine($"Cache cleanup removed {removed} items. Size: {currentSize} -> {GetCacheSizeInBytes()}");
+				Debug.WriteLine($"Cache cleanup removed {removed} items. Size: {FormatBytes(currentSize)} -> {FormatBytes(GetCacheSizeInBytes())}");
+			}
+			
+			// Also log current status
+			if (currentSize > 0)
+			{
+				Debug.WriteLine($"Cache status - Size: {FormatBytes(currentSize)}, Items: {_fileModelCache.Count}, Thumbnails: {_thumbnailCache.Count}");
 			}
 		}
 
@@ -691,6 +772,19 @@ namespace Files.App.Services.Caching
 				".mp4" or ".avi" or ".mkv" or ".mov" or ".wmv" or ".flv" or ".webm" => true,
 				_ => false
 			};
+		}
+		
+		private static string FormatBytes(long bytes)
+		{
+			string[] sizes = { "B", "KB", "MB", "GB", "TB" };
+			double len = bytes;
+			int order = 0;
+			while (len >= 1024 && order < sizes.Length - 1)
+			{
+				order++;
+				len = len / 1024;
+			}
+			return $"{len:0.##} {sizes[order]}";
 		}
 
 		private static bool IsAudioFile(string extension)
@@ -780,6 +874,13 @@ namespace Files.App.Services.Caching
 		private class CachedFileModel
 		{
 			public ListedItem Item { get; set; }
+			public DateTime LastAccessTime { get; set; }
+			public long SizeInBytes { get; set; }
+		}
+		
+		private class CachedThumbnail
+		{
+			public BitmapImage Thumbnail { get; set; }
 			public DateTime LastAccessTime { get; set; }
 			public long SizeInBytes { get; set; }
 		}

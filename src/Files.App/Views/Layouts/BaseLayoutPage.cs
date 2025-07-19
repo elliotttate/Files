@@ -82,10 +82,12 @@ namespace Files.App.Views.Layouts
 		private ListedItem? hoveredItem = null;
 		private ListedItem? preRenamingItem = null;
 		
-		// Scroll velocity tracking
+		// Scroll velocity tracking and throttling
 		private DateTime lastScrollTime = DateTime.UtcNow;
 		private int scrollEventCount = 0;
 		private readonly DispatcherQueueTimer scrollVelocityTimer;
+		private DateTime lastScrollProcessedTime = DateTime.UtcNow;
+		private const int ScrollThrottleMs = 8; // Reduced to 8ms for better responsiveness (~120 fps)
 
 		// Properties
 
@@ -323,7 +325,7 @@ namespace Files.App.Views.Layouts
 			
 			// Initialize viewport update timer
 			viewportUpdateTimer = DispatcherQueue.CreateTimer();
-			viewportUpdateTimer.Interval = TimeSpan.FromMilliseconds(200); // Increased interval for safety
+			viewportUpdateTimer.Interval = TimeSpan.FromMilliseconds(50); // Reduced to 50ms for much better responsiveness in release mode
 			viewportUpdateTimer.Tick += ViewportUpdateTimer_Tick;
 			
 			// Initialize scroll velocity timer
@@ -351,6 +353,23 @@ namespace Files.App.Views.Layouts
 			{
 				// Start viewport update timer (calling Start() on running timer is safe)
 				viewportUpdateTimer.Start();
+				
+				// Also trigger immediate viewport update for visible items to ensure quick loading
+				if (visibleItems.Count <= 50) // Increased threshold for immediate loading
+				{
+					// Run on UI thread to avoid timing issues
+					_ = DispatcherQueue.TryEnqueue(async () =>
+					{
+						try
+						{
+							await UpdateShellViewportAsync(viewportCancellationTokenSource.Token);
+						}
+						catch (Exception ex)
+						{
+							App.Logger?.LogDebug(ex, "Error in immediate viewport update");
+						}
+					});
+				}
 			}
 		}
 		
@@ -365,6 +384,14 @@ namespace Files.App.Views.Layouts
 		{
 			// Track scroll velocity
 			scrollEventCount++;
+			
+			// Throttle scroll processing to prevent overwhelming the system
+			var now = DateTime.UtcNow;
+			if ((now - lastScrollProcessedTime).TotalMilliseconds < ScrollThrottleMs)
+			{
+				return; // Skip this scroll event
+			}
+			lastScrollProcessedTime = now;
 			
 			// Debounce viewport updates during rapid scrolling
 			viewportUpdateTimer.Stop();
@@ -439,7 +466,7 @@ namespace Files.App.Views.Layouts
 			scrollEventCount = 0;
 		}
 		
-		private void ViewportUpdateTimer_Tick(object sender, object e)
+		private async void ViewportUpdateTimer_Tick(object sender, object e)
 		{
 			var updateId = Guid.NewGuid().ToString().Substring(0, 8);
 			App.Logger?.LogInformation("[{UpdateId}] ViewportUpdateTimer_Tick started, visible items: {Count}", updateId, visibleItems.Count);
@@ -452,45 +479,36 @@ namespace Files.App.Views.Layouts
 				return;
 			}
 			
-			// Update viewport on background thread to completely avoid UI thread reentrancy
-			Task.Run(async () =>
+			try
 			{
-				try
-				{
-					App.Logger?.LogDebug("[{UpdateId}] Viewport update task started on background thread", updateId);
-					
-					// Cancel previous viewport update
-					viewportCancellationTokenSource.Cancel();
-					viewportCancellationTokenSource = new CancellationTokenSource();
-					
-					// Create a snapshot of visible items
-					var visibleItemsCopy = visibleItems.ToList();
-					App.Logger?.LogDebug("[{UpdateId}] Created snapshot of {Count} visible items", updateId, visibleItemsCopy.Count);
-					
-					// Update viewport thumbnail loader if available
-					if (ViewportThumbnailLoader != null)
-					{
-						await ViewportThumbnailLoader.UpdateViewportAsync(
-							visibleItemsCopy, 
-							Constants.ShellIconSizes.Small,
-							viewportCancellationTokenSource.Token);
-					}
-					
-					// Also update the ShellViewModel's viewport
-					await UpdateShellViewportAsync(viewportCancellationTokenSource.Token);
-					
-					App.Logger?.LogDebug("[{UpdateId}] Viewport update completed successfully", updateId);
-				}
-				catch (OperationCanceledException)
-				{
-					// Expected when viewport is updated rapidly
-					App.Logger?.LogDebug("[{UpdateId}] Viewport update cancelled (expected during rapid scrolling)", updateId);
-				}
-				catch (Exception ex)
-				{
-					App.Logger?.LogWarning(ex, "[{UpdateId}] Failed to update viewport thumbnails", updateId);
-				}
-			});
+				App.Logger?.LogDebug("[{UpdateId}] Viewport update started on UI thread", updateId);
+				
+				// Cancel previous viewport update
+				var oldViewportCts = viewportCancellationTokenSource;
+				viewportCancellationTokenSource = new CancellationTokenSource();
+				oldViewportCts.Cancel();
+				oldViewportCts.Dispose();
+				
+				// Create a snapshot of visible items on UI thread
+				var visibleItemsCopy = visibleItems.ToList(); // Process all visible items to ensure thumbnails load
+				App.Logger?.LogDebug("[{UpdateId}] Created snapshot of {Count} visible items", updateId, visibleItemsCopy.Count);
+				
+				// Use ONLY the ShellViewModel's viewport update (not both systems)
+				// This prevents conflicts and reentrancy issues
+				// The actual async work will be done in UpdateShellViewportAsync
+				await UpdateShellViewportAsync(viewportCancellationTokenSource.Token);
+				
+				App.Logger?.LogDebug("[{UpdateId}] Viewport update completed successfully", updateId);
+			}
+			catch (OperationCanceledException)
+			{
+				// Expected when viewport is updated rapidly
+				App.Logger?.LogDebug("[{UpdateId}] Viewport update cancelled (expected during rapid scrolling)", updateId);
+			}
+			catch (Exception ex)
+			{
+				App.Logger?.LogWarning(ex, "[{UpdateId}] Failed to update viewport thumbnails", updateId);
+			}
 		}
 
 		protected IEnumerable<ListedItem>? GetAllItems()
@@ -708,8 +726,10 @@ namespace Files.App.Views.Layouts
 		private async Task GroupPreferenceUpdatedAsync()
 		{
 			// Two or more of these running at the same time will cause a crash, so cancel the previous one before beginning
-			groupingCancellationToken?.Cancel();
+			var oldGroupingCts = groupingCancellationToken;
 			groupingCancellationToken = new CancellationTokenSource();
+			oldGroupingCts?.Cancel();
+			oldGroupingCts?.Dispose();
 			var token = groupingCancellationToken.Token;
 
 			await ParentShellPageInstance!.ShellViewModel.GroupOptionsUpdatedAsync(token);
@@ -747,8 +767,10 @@ namespace Files.App.Views.Layouts
 		{
 			visibleItems.Clear();
 			viewportUpdateTimer.Stop();
-			viewportCancellationTokenSource.Cancel();
+			var oldCts = viewportCancellationTokenSource;
 			viewportCancellationTokenSource = new CancellationTokenSource();
+			oldCts.Cancel();
+			oldCts.Dispose();
 		}
 		
 		/// <summary>
@@ -805,8 +827,10 @@ namespace Files.App.Views.Layouts
 					if (ItemContextMenuFlyout.GetValue(ContextMenuExtensions.ItemsControlProperty) is ItemsControl itc)
 						itc.MaxHeight = Constants.UI.ContextMenuMaxHeight;
 
-					shellContextMenuItemCancellationToken?.Cancel();
+					var oldShellContextCts = shellContextMenuItemCancellationToken;
 					shellContextMenuItemCancellationToken = new CancellationTokenSource();
+					oldShellContextCts?.Cancel();
+					oldShellContextCts?.Dispose();
 					SelectedItemsPropertiesViewModel.CheckAllFileExtensions(SelectedItems!.Select(selectedItem => selectedItem?.FileExtension).ToList()!);
 
 					shiftPressed = Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Shift).HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down);
@@ -864,8 +888,10 @@ namespace Files.App.Views.Layouts
 				if (BaseContextMenuFlyout.GetValue(ContextMenuExtensions.ItemsControlProperty) is ItemsControl itc)
 					itc.MaxHeight = Constants.UI.ContextMenuMaxHeight;
 
-				shellContextMenuItemCancellationToken?.Cancel();
+				var oldMenuCts = shellContextMenuItemCancellationToken;
 				shellContextMenuItemCancellationToken = new CancellationTokenSource();
+				oldMenuCts?.Cancel();
+				oldMenuCts?.Dispose();
 
 				shiftPressed = Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Shift).HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down);
 				var items = ContentPageContextFlyoutFactory.GetItemContextCommandsWithoutShellItems(currentInstanceViewModel: InstanceViewModel!, selectedItems: [ParentShellPageInstance!.ShellViewModel.CurrentFolder], commandsViewModel: CommandsViewModel!, shiftPressed: shiftPressed, itemViewModel: ParentShellPageInstance!.ShellViewModel, selectedItemsPropertiesViewModel: null);
@@ -1405,6 +1431,14 @@ namespace Files.App.Views.Layouts
 				
 				if (!args.InRecycleQueue)
 				{
+					// Throttle container content changes during rapid scrolling
+					var now = DateTime.UtcNow;
+					if ((now - lastScrollProcessedTime).TotalMilliseconds < ScrollThrottleMs)
+					{
+						return; // Skip this event
+					}
+					lastScrollProcessedTime = now;
+					
 					// Item is becoming visible
 					visibleItems.Add(listedItem);
 					App.Logger?.LogDebug("[{ScrollId}] Item became visible: {Path}, Total visible: {Count}", 

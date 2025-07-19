@@ -237,11 +237,23 @@ namespace Files.App.Utils.Shell
 					return null;
 				}
 			}
+			catch (UnauthorizedAccessException ex)
+			{
+				// Handle access denied errors (common for system files like Prefetch)
+				App.Logger.LogDebug($"Access denied to shell item: {pathOrPIDL}. Error: {ex.Message}");
+				return null;
+			}
 			catch (COMException ex) when (ex.HResult == unchecked((int)0x80070490)) // ERROR_NOT_FOUND
 			{
 				// Shell namespace extension not found or not accessible
 				// This can happen with certain GUIDs like Frequent Places when they're not available
 				App.Logger.LogInformation($"Shell namespace extension not found: {pathOrPIDL}");
+				return null;
+			}
+			catch (COMException ex) when (ex.HResult == unchecked((int)0x80070005)) // E_ACCESSDENIED
+			{
+				// Handle COM access denied errors
+				App.Logger.LogDebug($"COM access denied to shell item: {pathOrPIDL}");
 				return null;
 			}
 			catch (Exception ex)

@@ -395,7 +395,7 @@ namespace Files.App.Services.Search
 								ItemDateModifiedReal = DateTime.FromFileTime(dateModified),
 								ItemDateCreatedReal = DateTime.FromFileTime(dateCreated),
 								IsHiddenItem = isHidden,
-								LoadFileIcon = true,  // Enable thumbnail loading for search results
+								LoadFileIcon = true,  // Enable thumbnail loading with hybrid approach
 								FileExtension = isFolder ? null : Path.GetExtension(fullPath),
 								FileSizeBytes = isFolder ? 0 : size,
 								FileSize = isFolder ? null : ByteSizeLib.ByteSize.FromBytes((ulong)size).ToBinaryString(),

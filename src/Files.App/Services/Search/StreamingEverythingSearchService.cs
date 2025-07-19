@@ -570,7 +570,7 @@ namespace Files.App.Services.Search
 					ItemNameRaw = fileName,
 					ItemPath = fullPath,
 					IsHiddenItem = isHidden,
-					LoadFileIcon = true,  // Enable thumbnail loading for search results
+					LoadFileIcon = true,  // Enable thumbnail loading with hybrid approach
 					FileExtension = isFolder ? null : Path.GetExtension(fullPath),
 					Opacity = isHidden ? Constants.UI.DimItemOpacity : 1
 				};
