@@ -19,6 +19,7 @@ namespace Files.App.Services.SizeProvider
 		private readonly IEverythingSearchService everythingService;
 		private static readonly object _everythingLock = new object();
 		private static bool _everythingInitialized = false;
+		private readonly SemaphoreSlim _calculationSemaphore = new(3); // Limit concurrent calculations
 
 		public event EventHandler<SizeChangedEventArgs>? SizeChanged;
 
